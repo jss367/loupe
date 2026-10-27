@@ -42,6 +42,8 @@ def match_spans(text, query):
 
 class Survey:
     def __init__(self, dataset):
+        if not isinstance(dataset, dict):
+            raise ValueError("Expected a survey JSON object")
         if dataset.get("schema") != "loupe.survey.v1":
             raise ValueError("Expected a loupe.survey.v1 dataset")
         if not isinstance(dataset.get("id"), str) or not dataset["id"]:

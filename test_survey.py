@@ -2,6 +2,10 @@
 
 import copy
 import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -176,6 +180,18 @@ class SurveyTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_nonobject_json_is_reported_as_a_cli_format_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "synthetic-invalid.json"
+            for value in ([], None, "synthetic", 42):
+                path.write_text(json.dumps(value), encoding="utf-8")
+                result = subprocess.run([sys.executable, str(Path(__file__).with_name("server.py")),
+                                         "--survey", str(path)], capture_output=True, text=True)
+                with self.subTest(value=value):
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("Cannot open survey: Expected a survey JSON object", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(survey=Survey(example())))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
