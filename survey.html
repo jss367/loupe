@@ -796,7 +796,7 @@
           }
         }
       }
-      function updateVisible() {
+      function updateVisible({ preserveSelection = false } = {}) {
         const tag = $("tag-filter").value.trim().toLowerCase();
         state.visible = state.records.filter(
           (r) =>
@@ -812,6 +812,7 @@
         renderList();
         if (
           state.selected &&
+          !preserveSelection &&
           !state.visible.some((r) => r.id === state.selected.id)
         ) {
           state.selected = null;
@@ -823,7 +824,7 @@
         }
         if (!state.selected && state.visible.length)
           selectRecord(state.visible[0]);
-        if (!state.visible.length)
+        if (!state.visible.length && !state.selected)
           $("detail").replaceChildren(
             el(
               "div",
@@ -982,7 +983,7 @@
               };
               state.annotations[selected.id] = a;
               persist({ annotations: { [selected.id]: { bookmark: a.bookmark } } });
-              updateVisible();
+              updateVisible({ preserveSelection: true });
               renderDetail();
             },
           ),
@@ -1055,7 +1056,7 @@
         }
         tags.oninput = () => save("tags");
         note.oninput = () => save("note");
-        tags.onchange = () => updateVisible();
+        tags.onchange = () => updateVisible({ preserveSelection: true });
         detail.append(annotations);
         if (state.mode === "respondent") {
           detail.append(el("h3", "section-title", "Other free responses"));
@@ -1195,7 +1196,17 @@
         if (/^[\s]*[=+@-]/.test(s) || /^[\t\r\n]/.test(s)) s = "'" + s;
         return '"' + s.replaceAll('"', '""') + '"';
       }
+      function reconcileForExport() {
+        try {
+          reconcileNotebook();
+        } catch {
+          state.storageWarning = "Unable to read browser storage. This export includes only this session's known annotations and subsets; other tabs may have additional saved work.";
+          error();
+        }
+      }
       $("export-data").onclick = () => {
+        reconcileForExport();
+        updateVisible({ preserveSelection: true });
         const rows = [
           [
             "respondent_id",
@@ -1233,12 +1244,7 @@
         );
       };
       $("export-notes").onclick = () => {
-        try {
-          reconcileNotebook();
-        } catch {
-          state.storageWarning = "Unable to read browser storage. This backup includes only this session's known annotations and subsets; other tabs may have additional saved work.";
-          error();
-        }
+        reconcileForExport();
         download(
           state.meta.id + "-annotations.json",
           JSON.stringify(

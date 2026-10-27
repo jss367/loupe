@@ -240,7 +240,7 @@ async function storageRegressions(base) {
     windows.push(dom.window);
     const w = dom.window, d = w.document;
     for (let i = 0; i < 100; i++) {
-      const expected = hash.includes("beta") ? "A different interpretation" : "Progress depends";
+      const expected = hash.includes("beta") ? "A different interpretation" : hash.includes("gamma") ? "Outside the retained" : "Progress depends";
       if (d.querySelector("#detail")?.textContent.includes(expected)) break;
       await pause();
     }
@@ -268,11 +268,17 @@ async function storageRegressions(base) {
         d.getElementById("export-notes").click();
         return JSON.parse(await downloads.at(-1).text());
       },
+      async csv() {
+        d.getElementById("export-data").click();
+        return downloads.at(-1).text();
+      },
     };
   }
   try {
-    const a = await tab(), b = await tab("#respondent=beta&question=why"), stale = await tab();
+    const a = await tab(), b = await tab("#respondent=beta&question=why"), stale = await tab(), csvTab = await tab();
     a.edit("Research notes", "Alpha tab note");
+    a.edit("Tags for this response", "remote-tag");
+    [...a.d.querySelectorAll("#detail button")].find((b) => b.textContent === "☆ Bookmark").click();
     b.edit("Research notes", "Beta tab note");
     a.subset("First subset");
     b.subset("Second subset");
@@ -281,6 +287,10 @@ async function storageRegressions(base) {
     assert.equal(saved.annotations[alpha].note, "Alpha tab note");
     assert.equal(saved.annotations[beta].note, "Beta tab note");
     assert.deepEqual(Object.keys(saved.cohorts).sort(), ["First subset", "Second subset"]);
+    const csv = await csvTab.csv();
+    assert(csv.includes("Alpha tab note"));
+    assert(csv.includes("Beta tab note"));
+    assert(csv.includes('"true","remote-tag","Alpha tab note"'));
     const staleBackup = await stale.backup();
     assert.equal(staleBackup.annotations[alpha].note, "Alpha tab note");
     assert.equal(staleBackup.annotations[beta].note, "Beta tab note");
@@ -293,7 +303,7 @@ async function storageRegressions(base) {
     saved = JSON.parse(stored.get(storageKey));
     assert.equal(saved.annotations[alpha].note, "Last alpha save");
     assert.deepEqual(saved.annotations[alpha].tags, ["cross-tab"]);
-    assert.equal(saved.annotations[alpha].bookmark, false);
+    assert.equal(saved.annotations[alpha].bookmark, true);
     assert(!Object.hasOwn(saved.cohorts, "First subset"), "stale tab must not revive deleted subsets");
     const reloaded = await tab();
     assert.equal(reloaded.d.querySelector('[aria-label="Research notes"]').value, "Last alpha save");
@@ -328,6 +338,32 @@ async function storageRegressions(base) {
     assert.equal(restored.annotations[beta].note, "Beta tab note");
     assert.equal(restored.annotations[alpha].note, "Alpha tab note");
     assert.deepEqual(Object.keys(restored.cohorts).sort(), ["First subset", "Second subset"]);
+    const linked = await tab("#respondent=gamma&question=why");
+    const bookmark = [...linked.d.querySelectorAll("#detail button")].find((b) => b.textContent === "☆ Bookmark");
+    bookmark.click();
+    assert(linked.d.getElementById("detail").textContent.includes("Outside the retained row set"));
+    assert(linked.d.getElementById("detail").textContent.includes("★ Bookmarked"));
+    assert.equal(linked.d.getElementById("response-count").textContent, "3");
+    linked.edit("Tags for this response", "linked-response");
+    linked.d.querySelector('[aria-label="Tags for this response"]').dispatchEvent(new linked.w.Event("change"));
+    assert(linked.d.getElementById("detail").textContent.includes("Outside the retained row set"));
+    linked.edit("Research notes", "Linked note");
+    assert.equal((await linked.backup()).annotations[JSON.stringify(["gamma", "why"])].note, "Linked note");
+    const related = await tab();
+    related.d.getElementById("question").value = "why";
+    related.d.getElementById("question").dispatchEvent(new related.w.Event("change"));
+    await pause();
+    [...related.d.querySelectorAll("#detail button")].find((b) => b.textContent === "All respondent answers").click();
+    [...related.d.querySelectorAll("#detail button")].find((b) => b.textContent === "Read and tag this response").click();
+    await pause();
+    assert(related.d.getElementById("detail").textContent.includes("Interpretation matters"));
+    [...related.d.querySelectorAll("#detail button")].find((b) => b.textContent === "☆ Bookmark").click();
+    assert(related.d.getElementById("detail").textContent.includes("Interpretation matters"));
+    assert(related.d.getElementById("detail").textContent.includes("★ Bookmarked"));
+    related.d.getElementById("sample").value = "excluded";
+    related.d.getElementById("sample").dispatchEvent(new related.w.Event("change"));
+    await pause();
+    assert(related.d.getElementById("detail").textContent.includes("Outside the retained row set"));
   } finally {
     for (const w of windows) w.close();
   }
