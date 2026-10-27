@@ -687,6 +687,20 @@
           }
         );
       }
+      function reconcileNotebook() {
+        const saved = JSON.parse(localStorage.getItem("loupe-survey:" + state.meta.id) || "{}");
+        const mergedAnnotations = { ...saved.annotations };
+        const mergedCohorts = { ...saved.cohorts };
+        for (const [key, patch] of Object.entries(pendingAnnotations)) {
+          mergedAnnotations[key] = { bookmark: false, tags: [], note: "", ...mergedAnnotations[key], ...patch };
+        }
+        for (const [name, value] of Object.entries(pendingCohorts)) {
+          if (value === null) delete mergedCohorts[name];
+          else Object.defineProperty(mergedCohorts, name, { value, enumerable: true, configurable: true, writable: true });
+        }
+        state.annotations = mergedAnnotations;
+        state.cohorts = mergedCohorts;
+      }
       function persist({ annotations = {}, cohorts = {} } = {}) {
         // Re-read before every write so stale tabs only replace fields they edit.
         // For the same field or subset name, the last successful save wins.
@@ -695,18 +709,7 @@
         }
         pendingCohorts = { ...pendingCohorts, ...cohorts };
         try {
-          const saved = JSON.parse(localStorage.getItem("loupe-survey:" + state.meta.id) || "{}");
-          const mergedAnnotations = { ...saved.annotations };
-          const mergedCohorts = { ...saved.cohorts };
-          for (const [key, patch] of Object.entries(pendingAnnotations)) {
-            mergedAnnotations[key] = { bookmark: false, tags: [], note: "", ...mergedAnnotations[key], ...patch };
-          }
-          for (const [name, value] of Object.entries(pendingCohorts)) {
-            if (value === null) delete mergedCohorts[name];
-            else Object.defineProperty(mergedCohorts, name, { value, enumerable: true, configurable: true, writable: true });
-          }
-          state.annotations = mergedAnnotations;
-          state.cohorts = mergedCohorts;
+          reconcileNotebook();
           localStorage.setItem(
             "loupe-survey:" + state.meta.id,
             JSON.stringify({
@@ -1229,7 +1232,13 @@
           "text/csv;charset=utf-8",
         );
       };
-      $("export-notes").onclick = () =>
+      $("export-notes").onclick = () => {
+        try {
+          reconcileNotebook();
+        } catch {
+          state.storageWarning = "Unable to read browser storage. This backup includes only this session's known annotations and subsets; other tabs may have additional saved work.";
+          error();
+        }
         download(
           state.meta.id + "-annotations.json",
           JSON.stringify(
@@ -1246,6 +1255,7 @@
           ),
           "application/json",
         );
+      };
       $("import-notes").onclick = () => $("notes-file").click();
       $("notes-file").onchange = async (event) => {
         try {

@@ -281,6 +281,10 @@ async function storageRegressions(base) {
     assert.equal(saved.annotations[alpha].note, "Alpha tab note");
     assert.equal(saved.annotations[beta].note, "Beta tab note");
     assert.deepEqual(Object.keys(saved.cohorts).sort(), ["First subset", "Second subset"]);
+    const staleBackup = await stale.backup();
+    assert.equal(staleBackup.annotations[alpha].note, "Alpha tab note");
+    assert.equal(staleBackup.annotations[beta].note, "Beta tab note");
+    assert.deepEqual(Object.keys(staleBackup.cohorts).sort(), ["First subset", "Second subset"]);
     a.d.getElementById("cohort-list").value = "First subset";
     a.d.getElementById("delete-cohort").click();
     b.subset("Third subset");
@@ -305,11 +309,25 @@ async function storageRegressions(base) {
     assert(reloaded.d.getElementById("error").textContent.includes("Back up tags & notes"));
     assert.equal((await reloaded.backup()).annotations[alpha].note, "Imported session-only note");
     failWrites = false;
+    b.subset("Other tab persisted during quota failure");
+    failWrites = true;
+    const pendingBackup = await reloaded.backup();
+    assert(Object.hasOwn(pendingBackup.cohorts, "Other tab persisted during quota failure"));
+    assert.equal(pendingBackup.annotations[alpha].note, "Imported session-only note");
+    assert(Object.hasOwn(pendingBackup.cohorts, "Session subset"));
+    failWrites = false;
     reloaded.edit("Tags for this response", "recovered");
     assert(!reloaded.d.getElementById("error").textContent.includes("session"));
     saved = JSON.parse(stored.get(storageKey));
     assert.equal(saved.annotations[alpha].note, "Imported session-only note");
     assert(Object.hasOwn(saved.cohorts, "Session subset"));
+    stored.clear();
+    const recovered = await tab();
+    await recovered.restore(staleBackup);
+    const restored = JSON.parse(stored.get(storageKey));
+    assert.equal(restored.annotations[beta].note, "Beta tab note");
+    assert.equal(restored.annotations[alpha].note, "Alpha tab note");
+    assert.deepEqual(Object.keys(restored.cohorts).sort(), ["First subset", "Second subset"]);
   } finally {
     for (const w of windows) w.close();
   }
