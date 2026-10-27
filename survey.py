@@ -140,7 +140,7 @@ class Survey:
                     parsed, bound = number(value), number(f["value"])
                     if parsed is None or (op == "gte" and parsed < bound) or (op == "lte" and parsed > bound) or (op == "eq" and parsed != bound):
                         return False
-                elif op == "eq" and value.strip().casefold() != f["value"].strip().casefold():
+                elif op == "eq" and value != f["value"]:
                     return False
             return True
 

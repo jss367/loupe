@@ -67,7 +67,7 @@ class SurveyTests(unittest.TestCase):
 
     def test_multiple_structured_conditions(self):
         filters = [{"question": "risk", "op": "gte", "value": "10"},
-                   {"question": "pace", "op": "eq", "value": "slower"}]
+                   {"question": "pace", "op": "eq", "value": "Slower"}]
         result = self.query(filters=json.dumps(filters))
         self.assertEqual(result["cohort_respondents"], 1)
         self.assertEqual(result["records"][0]["respondent_id"], "alpha")
@@ -150,6 +150,19 @@ class SurveyTests(unittest.TestCase):
         data["questions"][-1]["options"].append("Additional unobserved choice")
         survey = Survey(data)
         self.assertIn("Additional unobserved choice", survey.meta()["questions"][-1]["options"])
+
+    def test_category_filters_distinguish_exact_declared_options(self):
+        data = example()
+        data["questions"][-1]["options"] = ["US", "us", " us "]
+        for row, value in zip(data["respondents"], ["US", "us", " us ", "US"]):
+            row["answers"]["pace"] = value
+        survey = Survey(data)
+        for value, expected in [("US", 2), ("us", 1), (" us ", 1), ("Us", 0)]:
+            with self.subTest(value=value):
+                result = survey.query({"sample": ["all"], "filters": [json.dumps([
+                    {"question": "pace", "op": "eq", "value": value}
+                ])]})
+                self.assertEqual(result["cohort_respondents"], expected)
 
     def test_source_rows_are_required_positive_integers(self):
         for value in (None, 0, -1, 1.5, "4", True):
