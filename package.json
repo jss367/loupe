@@ -1,0 +1,10 @@
+{
+  "name": "loupe-ui-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test test_survey_ui.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

@@ -1,0 +1,145 @@
+"""Run with python -m unittest -v; all examples are synthetic."""
+
+import copy
+import json
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import ProxyHandler, Request, build_opener
+
+from server import make_handler
+from survey import Survey, number
+
+urlopen = build_opener(ProxyHandler({})).open
+
+
+def example():
+    return {
+        "schema": "loupe.survey.v1", "id": "synthetic-survey",
+        "title": "Synthetic survey preview", "description": "Synthetic examples for interface testing.",
+        "questions": [
+            {"id": "why", "wording": "Why do you expect this outcome?", "kind": "text", "section": "Expectations", "variable": "why", "raw_variable": "why", "occurrence": 1},
+            {"id": "comments", "wording": "Any other comments?", "kind": "text", "section": "Expectations", "variable": "comments", "raw_variable": "comments", "occurrence": 1},
+            {"id": "risk", "wording": "What probability do you assign?", "kind": "number", "section": "Expectations", "variable": "risk", "raw_variable": "risk", "occurrence": 1},
+            {"id": "pace", "wording": "What pace do you prefer?", "kind": "category", "section": "Preferences", "options": ["Slower", "Faster"], "variable": "pace", "raw_variable": "pace", "occurrence": 1},
+        ],
+        "respondents": [
+            {"id": "alpha", "source_row": 4, "retained": True, "finished": True, "answers": {"why": "Progress depends on reliable evaluation.", "comments": "Interpretation matters.", "risk": "10", "pace": "Slower"}},
+            {"id": "beta", "source_row": 5, "retained": True, "finished": False, "answers": {"why": "A different interpretation of progress.", "risk": "2", "pace": "Faster"}},
+            {"id": "gamma", "source_row": 6, "retained": False, "finished": True, "answers": {"why": "Outside the retained row set.", "risk": "NaN"}},
+            {"id": "delta", "source_row": 7, "retained": True, "finished": True, "answers": {"risk": "100"}},
+        ],
+    }
+
+
+class SurveyTests(unittest.TestCase):
+    def setUp(self):
+        self.survey = Survey(example())
+
+    def query(self, **params):
+        return self.survey.query({k: [v] for k, v in params.items()})
+
+    def test_denominators_include_rows_without_free_responses(self):
+        result = self.query()
+        self.assertEqual(result["cohort_respondents"], 3)
+        self.assertEqual(result["text_respondents"], 2)
+        self.assertEqual(result["matched_respondents"], 2)
+        self.assertEqual(len(result["records"]), 3)
+
+    def test_question_search_counts_authors_separately_from_answers(self):
+        result = self.query(question="why", q="evaluation")
+        self.assertEqual(result["text_respondents"], 2)
+        self.assertEqual(result["matched_respondents"], 1)
+        self.assertEqual(len(result["records"]), 1)
+        self.assertEqual(self.query(q="Why do you expect")["records"], [])  # do not search prompts
+
+    def test_multiple_structured_conditions(self):
+        filters = [{"question": "risk", "op": "gte", "value": "10"},
+                   {"question": "pace", "op": "eq", "value": "slower"}]
+        result = self.query(filters=json.dumps(filters))
+        self.assertEqual(result["cohort_respondents"], 1)
+        self.assertEqual(result["records"][0]["respondent_id"], "alpha")
+
+    def test_missing_and_completion(self):
+        result = self.query(completion="incomplete")
+        self.assertEqual(result["matched_respondents"], 1)
+        self.assertEqual(result["records"][0]["respondent_id"], "beta")
+        result = self.query(filters=json.dumps([{"question": "pace", "op": "missing"}]))
+        self.assertEqual(result["cohort_respondents"], 1)
+        self.assertEqual(result["records"], [])
+
+    def test_numeric_equality_compares_values(self):
+        result = self.query(filters=json.dumps([{"question": "risk", "op": "eq", "value": "10.0"}]))
+        self.assertEqual(result["cohort_respondents"], 1)
+        self.assertEqual(result["records"][0]["respondent_id"], "alpha")
+
+    def test_invalid_numeric_values_are_not_repaired_or_treated_as_zero(self):
+        for value in ("NaN", "Infinity", "-Infinity", "i10", "10%", "", None):
+            self.assertIsNone(number(value))
+        result = self.query(sample="all", filters=json.dumps([{"question": "risk", "op": "lte", "value": "10"}]))
+        self.assertEqual(result["cohort_respondents"], 2)
+
+    def test_bad_queries_fail_instead_of_broadening_the_subset(self):
+        for params in ({"question": "risk"}, {"sample": "unknown"}, {"filters": "{}"},
+                       {"filters": json.dumps([{"question": "risk", "op": "gte", "value": "NaN"}])},
+                       {"filters": json.dumps([{"question": "pace", "op": "gte", "value": "1"}])}):
+            with self.subTest(params=params), self.assertRaises(ValueError):
+                self.query(**params)
+
+    def test_duplicate_and_unknown_ids_rejected(self):
+        for mutation in (lambda d: d["respondents"].append(copy.deepcopy(d["respondents"][0])),
+                         lambda d: d["respondents"][0]["answers"].update(unknown="text")):
+            data = example()
+            mutation(data)
+            with self.assertRaises(ValueError):
+                Survey(data)
+
+
+class ServerTests(unittest.TestCase):
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(survey=Survey(example())))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def test_local_endpoints_and_bad_filter(self):
+        with urlopen(self.url + "/api/survey/meta") as r:
+            self.assertEqual(json.load(r)["total"], 4)
+            self.assertEqual(r.headers["Cache-Control"], "no-store")
+        with urlopen(self.url + "/api/survey/respondents/alpha") as r:
+            self.assertIn("answers", json.load(r))
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(self.url + "/api/survey/responses?" + urlencode({"filters": "bad json"}))
+        self.assertEqual(raised.exception.code, 400)
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(self.url + "/api/survey/respondents/unknown")
+        self.assertEqual(raised.exception.code, 404)
+
+    def test_browser_cross_origin_and_rebound_host_are_rejected(self):
+        for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Host": "attacker.example"}):
+            with self.subTest(headers=headers), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(self.url + "/api/survey/meta", headers=headers))
+            self.assertEqual(raised.exception.code, 403)
+
+    def test_existing_trajectory_mode(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler({}))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urlopen(f"http://127.0.0.1:{server.server_port}/api/records") as r:
+                self.assertEqual(json.load(r), {"records": [], "total": 0})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+
+if __name__ == "__main__":
+    unittest.main()
