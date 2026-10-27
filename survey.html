@@ -643,10 +643,18 @@
         select.append(node);
       }
       function prompt(q) {
+        const wording = q.wording.replace(/\s+/g, " ");
+        // Triplet questions often differ only in the horizon at the end.
+        const label =
+          wording.length > 210
+            ? wording.slice(0, 140) + "… " + wording.slice(-65)
+            : wording;
         return (
+          q.variable +
+          " · " +
           q.section +
           " · " +
-          q.wording.replace(/\s+/g, " ").slice(0, 150) +
+          label +
           (q.occurrence > 1 ? " · occurrence " + q.occurrence : "")
         );
       }
