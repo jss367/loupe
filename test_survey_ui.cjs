@@ -18,6 +18,14 @@ test("survey inspection and annotation workflows", async () => {
     { cwd: root, encoding: "utf8" },
   );
   const synthetic = JSON.parse(fixture);
+  synthetic.questions.push({
+    id: "réponse 🐦", wording: "Synthetic Unicode follow-up?", kind: "text",
+    section: "Expectations", variable: "réponse 🐦", raw_variable: "réponse 🐦", occurrence: 1,
+  });
+  synthetic.respondents.push({
+    id: "élève 🐦", source_row: 8, retained: false, finished: true,
+    answers: { why: "Unicode synthetic expectation", "réponse 🐦": "Unicode synthetic follow-up" },
+  });
   synthetic.respondents[0].answers.why += '\n<img src="x" onerror="alert(1)">';
   fs.writeFileSync(
     path.join(scratch, "survey.json"),
@@ -215,7 +223,7 @@ async function storageRegressions(base) {
   const windows = [];
   let failWrites = false;
   const pause = () => new Promise((r) => setTimeout(r, 20));
-  async function tab(hash = "") {
+  async function tab(hash = "", expectedText = "") {
     const downloads = [];
     const dom = new JSDOM(html, {
       url: base + hash,
@@ -240,7 +248,7 @@ async function storageRegressions(base) {
     windows.push(dom.window);
     const w = dom.window, d = w.document;
     for (let i = 0; i < 100; i++) {
-      const expected = hash.includes("beta") ? "A different interpretation" : hash.includes("gamma") ? "Outside the retained" : "Progress depends";
+      const expected = expectedText || (hash.includes("beta") ? "A different interpretation" : hash.includes("gamma") ? "Outside the retained" : "Progress depends");
       if (d.querySelector("#detail")?.textContent.includes(expected)) break;
       await pause();
     }
@@ -364,6 +372,27 @@ async function storageRegressions(base) {
     related.d.getElementById("sample").dispatchEvent(new related.w.Event("change"));
     await pause();
     assert(related.d.getElementById("detail").textContent.includes("Outside the retained row set"));
+    const unicode = await tab();
+    unicode.d.getElementById("sample").value = "all";
+    unicode.d.getElementById("sample").dispatchEvent(new unicode.w.Event("change"));
+    await pause();
+    [...unicode.d.querySelectorAll("#records button")].find((b) => b.textContent.includes("Unicode synthetic expectation")).click();
+    await pause();
+    unicode.edit("Research notes", "Unicode list note");
+    const unicodeHash = unicode.w.location.hash;
+    unicode.w.location.hash = "";
+    unicode.w.location.hash = unicodeHash;
+    await pause();
+    assert.equal(unicode.d.querySelector('[aria-label="Research notes"]').value, "Unicode list note");
+    [...unicode.d.querySelectorAll("#detail button")].find((b) => b.textContent === "All respondent answers").click();
+    [...unicode.d.querySelectorAll("#detail button")].find((b) => b.textContent === "Read and tag this response").click();
+    await pause();
+    unicode.edit("Research notes", "Unicode follow-up note");
+    const unicodeBackup = await unicode.backup();
+    assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "why"])].note, "Unicode list note");
+    assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "réponse 🐦"])].note, "Unicode follow-up note");
+    const unicodeReloaded = await tab(unicode.w.location.hash, "Unicode synthetic follow-up");
+    assert.equal(unicodeReloaded.d.querySelector('[aria-label="Research notes"]').value, "Unicode follow-up note");
   } finally {
     for (const w of windows) w.close();
   }

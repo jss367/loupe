@@ -75,6 +75,18 @@ class SurveyTests(unittest.TestCase):
         self.assertEqual(result["cohort_respondents"], 1)
         self.assertEqual(result["records"][0]["respondent_id"], "alpha")
 
+    def test_annotation_keys_preserve_unicode_ids_for_browser_links(self):
+        data = example()
+        data["questions"][0]["id"] = 'réponse 🐦 "quoted"'
+        row = data["respondents"][0]
+        row["id"] = "élève 🐦"
+        row["answers"] = {'réponse 🐦 "quoted"': "Synthetic Unicode response"}
+        for other in data["respondents"][1:]:
+            other["answers"].pop("why", None)
+        record = Survey(data).query({})["records"][0]
+        self.assertEqual(record["id"], '["élève 🐦","réponse 🐦 \\"quoted\\""]')
+        self.assertEqual(json.loads(record["id"]), [row["id"], data["questions"][0]["id"]])
+
     def test_invalid_numeric_values_are_not_repaired_or_treated_as_zero(self):
         for value in ("NaN", "Infinity", "-Infinity", "i10", "10%", "", None):
             self.assertIsNone(number(value))

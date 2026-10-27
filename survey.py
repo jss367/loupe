@@ -113,7 +113,7 @@ class Survey:
                 authors.add(r["id"])
                 if search and search not in text.casefold():
                     continue
-                records.append({"id": json.dumps([r["id"], q], separators=(",", ":")),
+                records.append({"id": json.dumps([r["id"], q], ensure_ascii=False, separators=(",", ":")),
                                 "respondent_id": r["id"], "question_id": q,
                                 "text": text, "retained": r["retained"], "finished": r["finished"]})
         return {"records": records, "cohort_respondents": len(cohort),
