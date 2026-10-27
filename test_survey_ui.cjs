@@ -226,13 +226,26 @@ async function storageRegressions(base) {
   async function tab(hash = "", expectedText = "") {
     const downloads = [];
     let holdId = null, releaseFetch = null;
+    let holdResponses = false, holdDebounce = false, runDebounce = null;
     const dom = new JSDOM(html, {
       url: base + hash,
       runScripts: "dangerously",
       pretendToBeVisual: true,
       virtualConsole: new VirtualConsole(),
       beforeParse(w) {
+        const setTimeout = w.setTimeout.bind(w);
+        w.setTimeout = (callback, delay, ...args) => {
+          if (holdDebounce && delay === 200) {
+            runDebounce = () => callback(...args);
+            return 0;
+          }
+          return setTimeout(callback, delay, ...args);
+        };
         w.fetch = (path) => {
+          if (holdResponses && path.startsWith("/api/survey/responses?")) {
+            holdResponses = false;
+            return new Promise((resolve) => { releaseFetch = () => resolve(fetch(new URL(path, base))); });
+          }
           if (holdId !== null && path === "/api/survey/respondents/" + encodeURIComponent(holdId)) {
             holdId = null;
             return new Promise((resolve) => { releaseFetch = () => resolve(fetch(new URL(path, base))); });
@@ -262,6 +275,21 @@ async function storageRegressions(base) {
     assert(d.querySelector('[aria-label="Research notes"]'), "response loaded");
     return {
       w, d,
+      holdSearch() {
+        holdResponses = true;
+        holdDebounce = true;
+        return async () => {
+          assert(releaseFetch, "old search request was held");
+          releaseFetch();
+          await pause();
+          return async () => {
+            assert(runDebounce, "new search is waiting for debounce");
+            holdDebounce = false;
+            runDebounce();
+            await pause();
+          };
+        };
+      },
       holdRespondent(id) {
         holdId = id;
         releaseFetch = null;
@@ -418,6 +446,19 @@ async function storageRegressions(base) {
     await release();
     assert(race.w.location.hash.includes("respondent=beta"));
     assert(race.d.getElementById("detail").textContent.includes("A different interpretation"));
+    const debounce = await tab();
+    const releaseOldSearch = debounce.holdSearch();
+    debounce.d.getElementById("question").value = "why";
+    debounce.d.getElementById("question").dispatchEvent(new debounce.w.Event("change"));
+    await pause();
+    debounce.d.getElementById("search").value = "A query with no synthetic matches";
+    debounce.d.getElementById("search").dispatchEvent(new debounce.w.Event("input"));
+    const runSearch = await releaseOldSearch();
+    assert(debounce.d.getElementById("export-data").disabled);
+    assert.equal(debounce.d.getElementById("response-count").textContent, "3");
+    await runSearch();
+    assert.equal(debounce.d.getElementById("response-count").textContent, "0");
+    assert(debounce.d.getElementById("export-data").disabled);
     release = race.holdRespondent("gamma");
     race.w.location.hash = "#respondent=gamma&question=why";
     await pause();

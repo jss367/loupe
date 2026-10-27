@@ -1369,6 +1369,8 @@
       let timer;
       $("search").oninput = () => {
         clearTimeout(timer);
+        state.request++;
+        state.linkRequest++;
         state.pending = true;
         $("export-data").disabled = true;
         timer = setTimeout(refresh, 200);
