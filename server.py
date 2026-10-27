@@ -90,6 +90,8 @@ def make_handler(records):
             parsed = urlparse(self.path)
             if parsed.path in ("/", "/index.html"):
                 return self.send((ROOT / "index.html").read_bytes(), mime="text/html; charset=utf-8")
+            if parsed.path in ("/app.mjs", "/model.mjs"):
+                return self.send((ROOT / parsed.path[1:]).read_bytes(), mime="text/javascript; charset=utf-8")
             if parsed.path == "/api/records":
                 return self.send({"records": filter_records(records, parse_qs(parsed.query)), "total": len(records)})
             if parsed.path == "/api/meta":
