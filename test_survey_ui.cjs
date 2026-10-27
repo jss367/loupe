@@ -24,7 +24,7 @@ test("survey inspection and annotation workflows", async () => {
   });
   synthetic.respondents.push({
     id: "élève 🐦", source_row: 8, retained: false, finished: true,
-    answers: { why: "Unicode synthetic expectation", "réponse 🐦": "Unicode synthetic follow-up" },
+    answers: { why: "Unicode synthetic expectation: 🐦 Straße İ", "réponse 🐦": "Unicode synthetic follow-up" },
   });
   synthetic.respondents[0].answers.why += '\n<img src="x" onerror="alert(1)">';
   fs.writeFileSync(
@@ -246,7 +246,7 @@ async function storageRegressions(base) {
             holdResponses = false;
             return new Promise((resolve) => { releaseFetch = () => resolve(fetch(new URL(path, base))); });
           }
-          if (holdId !== null && path === "/api/survey/respondents/" + encodeURIComponent(holdId)) {
+          if (holdId !== null && path.split("?")[0] === "/api/survey/respondents/" + encodeURIComponent(holdId)) {
             holdId = null;
             return new Promise((resolve) => { releaseFetch = () => resolve(fetch(new URL(path, base))); });
           }
@@ -437,6 +437,19 @@ async function storageRegressions(base) {
     assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "réponse 🐦"])].note, "Unicode follow-up note");
     const unicodeReloaded = await tab(unicode.w.location.hash, "Unicode synthetic follow-up");
     assert.equal(unicodeReloaded.d.querySelector('[aria-label="Research notes"]').value, "Unicode follow-up note");
+    const searchUnicode = await tab();
+    searchUnicode.d.getElementById("sample").value = "all";
+    searchUnicode.d.getElementById("sample").dispatchEvent(new searchUnicode.w.Event("change"));
+    await pause();
+    for (const [query, expected] of [["STRASSE", "Straße"], ["i\u0307", "İ"], ["🐦", "🐦"]]) {
+      const input = searchUnicode.d.getElementById("search");
+      input.value = query;
+      input.dispatchEvent(new searchUnicode.w.Event("input"));
+      await new Promise((r) => setTimeout(r, 260));
+      assert.equal(searchUnicode.d.querySelector("#records mark")?.textContent, expected);
+      assert.equal(searchUnicode.d.querySelector("#detail mark")?.textContent, expected);
+      assert(searchUnicode.d.querySelector("#detail .answer").textContent.includes("🐦 Straße İ"));
+    }
     const race = await tab();
     let release = race.holdRespondent("alpha");
     race.w.location.hash = "#respondent=alpha&question=comments";

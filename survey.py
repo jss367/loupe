@@ -14,6 +14,32 @@ def number(value):
         return None
 
 
+def match_spans(text, query):
+    """Case-folded matches as original-text UTF-16 offsets for the browser."""
+    needle = query.strip().casefold()
+    if not needle:
+        return []
+    folded, starts, ends = [], [], []
+    offset = 0
+    for char in text:
+        part = char.casefold()
+        end = offset + (2 if ord(char) > 0xFFFF else 1)
+        folded.append(part)
+        starts.extend([offset] * len(part))
+        ends.extend([end] * len(part))
+        offset = end
+    folded = "".join(folded)
+    matches, position = [], 0
+    while (position := folded.find(needle, position)) >= 0:
+        start, end = starts[position], ends[position + len(needle) - 1]
+        if matches and start < matches[-1][1]:
+            matches[-1][1] = max(matches[-1][1], end)
+        else:
+            matches.append([start, end])
+        position += len(needle)
+    return matches
+
+
 class Survey:
     def __init__(self, dataset):
         if dataset.get("schema") != "loupe.survey.v1":
@@ -115,7 +141,8 @@ class Survey:
                     continue
                 records.append({"id": json.dumps([r["id"], q], ensure_ascii=False, separators=(",", ":")),
                                 "respondent_id": r["id"], "question_id": q,
-                                "text": text, "retained": r["retained"], "finished": r["finished"]})
+                                "text": text, "matches": match_spans(text, search),
+                                "retained": r["retained"], "finished": r["finished"]})
         return {"records": records, "cohort_respondents": len(cohort),
                 "text_respondents": len(authors),
                 "matched_respondents": len({r["respondent_id"] for r in records})}

@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
 from server import make_handler
-from survey import Survey, number
+from survey import Survey, match_spans, number
 
 urlopen = build_opener(ProxyHandler({})).open
 
@@ -54,6 +54,16 @@ class SurveyTests(unittest.TestCase):
         self.assertEqual(result["matched_respondents"], 1)
         self.assertEqual(len(result["records"]), 1)
         self.assertEqual(self.query(q="Why do you expect")["records"], [])  # do not search prompts
+
+    def test_casefolded_matches_map_to_original_utf16_offsets(self):
+        self.assertEqual(match_spans("🐦 Straße İ", "STRASSE"), [[3, 9]])
+        self.assertEqual(match_spans("🐦 Straße İ", "i\u0307"), [[10, 11]])
+        self.assertEqual(match_spans("🐦 Straße İ", "🐦"), [[0, 2]])
+        self.assertEqual(match_spans("ß", "s"), [[0, 1]])
+        data = example()
+        data["respondents"][0]["answers"]["why"] = "🐦 Straße İ"
+        record = Survey(data).query({"q": ["STRASSE"]})["records"][0]
+        self.assertEqual(record["matches"], [[3, 9]])
 
     def test_multiple_structured_conditions(self):
         filters = [{"question": "risk", "op": "gte", "value": "10"},
@@ -145,6 +155,8 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(r.headers["Cache-Control"], "no-store")
         with urlopen(self.url + "/api/survey/respondents/alpha") as r:
             self.assertIn("answers", json.load(r))
+        with urlopen(self.url + "/api/survey/respondents/alpha?q=evaluation") as r:
+            self.assertEqual(json.load(r)["matches"]["why"], [[29, 39]])
         with self.assertRaises(HTTPError) as raised:
             urlopen(self.url + "/api/survey/responses?" + urlencode({"filters": "bad json"}))
         self.assertEqual(raised.exception.code, 400)

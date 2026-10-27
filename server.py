@@ -112,7 +112,12 @@ def make_handler(records=None, survey=None):
                     ident = unquote(parsed.path.removeprefix("/api/survey/respondents/"))
                     respondent = survey.respondents.get(ident)
                     if respondent is not None:
-                        return self.send(respondent)
+                        from survey import match_spans
+                        query = parse_qs(parsed.query).get("q", [""])[0]
+                        return self.send({**respondent, "matches": {
+                            q: match_spans(text, query) for q, text in respondent["answers"].items()
+                            if survey.questions[q]["kind"] == "text"
+                        }})
                 return self.send({"error": "Not found"}, 404)
             if parsed.path in ("/", "/index.html"):
                 return self.send((ROOT / "index.html").read_bytes(), mime="text/html; charset=utf-8")

@@ -661,21 +661,14 @@
           (q.occurrence > 1 ? " · occurrence " + q.occurrence : "")
         );
       }
-      function highlighted(node, text) {
-        const query = $("search").value.trim(),
-          lower = text.toLowerCase();
-        if (!query) {
-          node.textContent = text;
-          return;
-        }
-        let from = 0,
-          index;
-        while ((index = lower.indexOf(query.toLowerCase(), from)) !== -1) {
+      function highlighted(node, text, matches = []) {
+        let from = 0;
+        for (const [start, end] of matches) {
           node.append(
-            document.createTextNode(text.slice(from, index)),
-            el("mark", "", text.slice(index, index + query.length)),
+            document.createTextNode(text.slice(from, start)),
+            el("mark", "", text.slice(start, end)),
           );
-          from = index + query.length;
+          from = end;
         }
         node.append(document.createTextNode(text.slice(from)));
       }
@@ -778,7 +771,10 @@
             data.cohort_respondents.toLocaleString();
           $("text-count").textContent = data.text_respondents.toLocaleString();
           state.pending = false;
+          const previousSelection = state.selected;
           updateVisible();
+          if (state.selected && state.selected === previousSelection)
+            selectRecord(state.records.find((r) => r.id === state.selected.id) || state.selected);
           renderDetail();
         } catch (e) {
           if (token === state.request) {
@@ -862,7 +858,7 @@
             ),
           );
           const preview = el("div", "preview");
-          highlighted(preview, r.text);
+          highlighted(preview, r.text, r.matches);
           b.append(
             preview,
             el(
@@ -913,7 +909,8 @@
         try {
           const r = await api(
             "/api/survey/respondents/" +
-              encodeURIComponent(record.respondent_id),
+              encodeURIComponent(record.respondent_id) +
+              "?" + new URLSearchParams({ q: $("search").value }),
           );
           if (token !== state.detailRequest) return;
           state.respondent = r;
@@ -949,7 +946,7 @@
           ),
         );
         const a = el("div", "answer");
-        highlighted(a, text);
+        highlighted(a, text, state.respondent?.matches?.[q.id]);
         box.append(a);
         return box;
       }
