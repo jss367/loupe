@@ -624,6 +624,7 @@
           storageWarning: "",
         };
       let pendingAnnotations = {}, pendingCohorts = {};
+      let saveQueue = Promise.resolve();
       const annotationKey = (rid, qid) => JSON.stringify([rid, qid]);
       function error(message = "") {
         $("error").textContent = [message, state.storageWarning].filter(Boolean).join(" ");
@@ -702,26 +703,33 @@
           pendingAnnotations[key] = { ...pendingAnnotations[key], ...patch };
         }
         pendingCohorts = { ...pendingCohorts, ...cohorts };
-        try {
-          reconcileNotebook();
-          localStorage.setItem(
-            "loupe-survey:" + state.meta.id,
-            JSON.stringify({
-              annotations: state.annotations,
-              cohorts: state.cohorts,
-            }),
-          );
-          pendingAnnotations = {};
-          pendingCohorts = {};
-          state.storageWarning = "";
-          error();
-          renderCohorts();
-          return true;
-        } catch {
-          state.storageWarning = "Browser storage is unavailable or full. Changes remain in this session; use Back up tags & notes to save them.";
-          error();
-          return false;
-        }
+        saveQueue = saveQueue.then(async () => {
+          try {
+            if (!navigator.locks) {
+              state.storageWarning = "This browser cannot coordinate saves across tabs. Changes remain in this session; use Back up tags & notes to save them.";
+              error();
+              return false;
+            }
+            return await navigator.locks.request("loupe-survey:" + state.meta.id, () => {
+              reconcileNotebook();
+              localStorage.setItem(
+                "loupe-survey:" + state.meta.id,
+                JSON.stringify({ annotations: state.annotations, cohorts: state.cohorts }),
+              );
+              pendingAnnotations = {};
+              pendingCohorts = {};
+              state.storageWarning = "";
+              error();
+              renderCohorts();
+              return true;
+            });
+          } catch {
+            state.storageWarning = "Browser storage is unavailable or full. Changes remain in this session; use Back up tags & notes to save them.";
+            error();
+            return false;
+          }
+        });
+        return saveQueue;
       }
       function currentFilters() {
         return {
@@ -1294,7 +1302,7 @@
           validateCohorts(data.cohorts || {});
           state.annotations = { ...state.annotations, ...data.annotations };
           state.cohorts = { ...state.cohorts, ...data.cohorts };
-          const persisted = persist({ annotations: data.annotations, cohorts: data.cohorts || {} });
+          const persisted = await persist({ annotations: data.annotations, cohorts: data.cohorts || {} });
           renderCohorts();
           updateVisible();
           renderDetail();
@@ -1342,11 +1350,11 @@
           refresh();
         }
       };
-      $("save-cohort").onclick = () => {
+      $("save-cohort").onclick = async () => {
         const name = $("cohort-name").value.trim();
         if (!name) return error("Give the subset a name.");
         state.cohorts = { ...state.cohorts, [name]: currentFilters() };
-        const persisted = persist({ cohorts: { [name]: state.cohorts[name] } });
+        const persisted = await persist({ cohorts: { [name]: state.cohorts[name] } });
         renderCohorts();
         $("cohort-list").value = name;
         if (persisted) error();

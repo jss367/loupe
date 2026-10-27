@@ -164,11 +164,13 @@ specific to Gloom. Other surveys can use the interchange format above. Other
 conversation and trajectory datasets still need an importer and corresponding
 metadata support; arbitrary Parquet or JSON files are not accepted.
 
-Survey annotation saves read the latest browser notebook before applying the
+Survey annotation saves use the browser's Web Locks API to serialize writes
+across tabs, then read the latest browser notebook before applying the
 edited field or subset. Edits to different responses, annotation fields, or
 subset names are preserved across tabs; for the same field or subset name, the
 last successful save wins. Storage failures leave a persistent backup warning
 until a save succeeds. Keep notebook backups for recovery.
+Browsers without Web Locks retain edits in the session and show a backup warning.
 
 ## Development checks
 

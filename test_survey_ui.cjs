@@ -7,6 +7,14 @@ const { spawn, execFileSync } = require("node:child_process");
 const { test } = require("node:test");
 const root = __dirname;
 const html = fs.readFileSync(path.join(root, "survey.html"), "utf8");
+const lockQueues = new Map();
+const locks = {
+  request(name, callback) {
+    const result = (lockQueues.get(name) || Promise.resolve()).then(callback);
+    lockQueues.set(name, result.catch(() => {}));
+    return result;
+  },
+};
 test("survey inspection and annotation workflows", async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "loupe-ui-"));
   const fixture = execFileSync(
@@ -71,6 +79,7 @@ test("survey inspection and annotation workflows", async () => {
       pretendToBeVisual: true,
       virtualConsole: console,
       beforeParse(w) {
+        Object.defineProperty(w.navigator, "locks", { value: locks });
         w.fetch = (path) => fetch(new URL(path, base));
         w.structuredClone = structuredClone;
         w.Blob = Blob;
@@ -233,6 +242,7 @@ async function storageRegressions(base) {
       pretendToBeVisual: true,
       virtualConsole: new VirtualConsole(),
       beforeParse(w) {
+        Object.defineProperty(w.navigator, "locks", { value: locks, configurable: true });
         const setTimeout = w.setTimeout.bind(w);
         w.setTimeout = (callback, delay, ...args) => {
           if (holdDebounce && delay === 200) {
@@ -299,14 +309,16 @@ async function storageRegressions(base) {
           await pause();
         };
       },
-      edit(label, value) {
+      async edit(label, value) {
         const input = d.querySelector(`[aria-label="${label}"]`);
         input.value = value;
         input.dispatchEvent(new w.Event("input"));
+        await pause();
       },
-      subset(name) {
+      async subset(name) {
         d.getElementById("cohort-name").value = name;
         d.getElementById("save-cohort").click();
+        await pause();
       },
       async restore(backup) {
         const input = d.getElementById("notes-file");
@@ -328,12 +340,12 @@ async function storageRegressions(base) {
   }
   try {
     const a = await tab(), b = await tab("#respondent=beta&question=why"), stale = await tab(), csvTab = await tab();
-    a.edit("Research notes", "Alpha tab note");
-    a.edit("Tags for this response", "remote-tag");
+    await a.edit("Research notes", "Alpha tab note");
+    await a.edit("Tags for this response", "remote-tag");
     [...a.d.querySelectorAll("#detail button")].find((b) => b.textContent === "☆ Bookmark").click();
-    b.edit("Research notes", "Beta tab note");
-    a.subset("First subset");
-    b.subset("Second subset");
+    await b.edit("Research notes", "Beta tab note");
+    await a.subset("First subset");
+    await b.subset("Second subset");
     const alpha = JSON.stringify(["alpha", "why"]), beta = JSON.stringify(["beta", "why"]);
     let saved = JSON.parse(stored.get(storageKey));
     assert.equal(saved.annotations[alpha].note, "Alpha tab note");
@@ -349,9 +361,9 @@ async function storageRegressions(base) {
     assert.deepEqual(Object.keys(staleBackup.cohorts).sort(), ["First subset", "Second subset"]);
     a.d.getElementById("cohort-list").value = "First subset";
     a.d.getElementById("delete-cohort").click();
-    b.subset("Third subset");
-    stale.edit("Tags for this response", "cross-tab");
-    stale.edit("Research notes", "Last alpha save");
+    await b.subset("Third subset");
+    await stale.edit("Tags for this response", "cross-tab");
+    await stale.edit("Research notes", "Last alpha save");
     saved = JSON.parse(stored.get(storageKey));
     assert.equal(saved.annotations[alpha].note, "Last alpha save");
     assert.deepEqual(saved.annotations[alpha].tags, ["cross-tab"]);
@@ -367,18 +379,18 @@ async function storageRegressions(base) {
     await reloaded.restore(backup);
     assert(reloaded.d.getElementById("error").textContent.includes("Changes remain in this session"));
     assert(!reloaded.d.getElementById("error").textContent.includes("Backup restored"));
-    reloaded.subset("Session subset");
+    await reloaded.subset("Session subset");
     assert(reloaded.d.getElementById("error").textContent.includes("Back up tags & notes"));
     assert.equal((await reloaded.backup()).annotations[alpha].note, "Imported session-only note");
     failWrites = false;
-    b.subset("Other tab persisted during quota failure");
+    await b.subset("Other tab persisted during quota failure");
     failWrites = true;
     const pendingBackup = await reloaded.backup();
     assert(Object.hasOwn(pendingBackup.cohorts, "Other tab persisted during quota failure"));
     assert.equal(pendingBackup.annotations[alpha].note, "Imported session-only note");
     assert(Object.hasOwn(pendingBackup.cohorts, "Session subset"));
     failWrites = false;
-    reloaded.edit("Tags for this response", "recovered");
+    await reloaded.edit("Tags for this response", "recovered");
     assert(!reloaded.d.getElementById("error").textContent.includes("session"));
     saved = JSON.parse(stored.get(storageKey));
     assert.equal(saved.annotations[alpha].note, "Imported session-only note");
@@ -396,10 +408,10 @@ async function storageRegressions(base) {
     assert(linked.d.getElementById("detail").textContent.includes("Outside the retained row set"));
     assert(linked.d.getElementById("detail").textContent.includes("★ Bookmarked"));
     assert.equal(linked.d.getElementById("response-count").textContent, "3");
-    linked.edit("Tags for this response", "linked-response");
+    await linked.edit("Tags for this response", "linked-response");
     linked.d.querySelector('[aria-label="Tags for this response"]').dispatchEvent(new linked.w.Event("change"));
     assert(linked.d.getElementById("detail").textContent.includes("Outside the retained row set"));
-    linked.edit("Research notes", "Linked note");
+    await linked.edit("Research notes", "Linked note");
     assert.equal((await linked.backup()).annotations[JSON.stringify(["gamma", "why"])].note, "Linked note");
     const related = await tab();
     related.d.getElementById("question").value = "why";
@@ -422,7 +434,7 @@ async function storageRegressions(base) {
     await pause();
     [...unicode.d.querySelectorAll("#records button")].find((b) => b.textContent.includes("Unicode synthetic expectation")).click();
     await pause();
-    unicode.edit("Research notes", "Unicode list note");
+    await unicode.edit("Research notes", "Unicode list note");
     const unicodeHash = unicode.w.location.hash;
     unicode.w.location.hash = "";
     unicode.w.location.hash = unicodeHash;
@@ -431,7 +443,7 @@ async function storageRegressions(base) {
     [...unicode.d.querySelectorAll("#detail button")].find((b) => b.textContent === "All respondent answers").click();
     [...unicode.d.querySelectorAll("#detail button")].find((b) => b.textContent === "Read and tag this response").click();
     await pause();
-    unicode.edit("Research notes", "Unicode follow-up note");
+    await unicode.edit("Research notes", "Unicode follow-up note");
     const unicodeBackup = await unicode.backup();
     assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "why"])].note, "Unicode list note");
     assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "réponse 🐦"])].note, "Unicode follow-up note");
@@ -459,6 +471,34 @@ async function storageRegressions(base) {
     await release();
     assert(race.w.location.hash.includes("respondent=beta"));
     assert(race.d.getElementById("detail").textContent.includes("A different interpretation"));
+    let unlock;
+    const gate = locks.request(storageKey, () => new Promise((resolve) => { unlock = resolve; }));
+    await pause();
+    const beforeConcurrentWrites = stored.get(storageKey);
+    const concurrentEdits = [
+      a.edit("Research notes", "Concurrent alpha note"),
+      b.edit("Research notes", "Concurrent beta note"),
+      a.subset("Concurrent alpha subset"),
+      b.subset("Concurrent beta subset"),
+    ];
+    await pause();
+    assert.equal(stored.get(storageKey), beforeConcurrentWrites, "queued saves must wait for the cross-tab lock");
+    unlock();
+    await gate;
+    await Promise.all(concurrentEdits);
+    await pause();
+    const concurrent = JSON.parse(stored.get(storageKey));
+    assert.equal(concurrent.annotations[alpha].note, "Concurrent alpha note");
+    assert.equal(concurrent.annotations[beta].note, "Concurrent beta note");
+    assert(Object.hasOwn(concurrent.cohorts, "Concurrent alpha subset"));
+    assert(Object.hasOwn(concurrent.cohorts, "Concurrent beta subset"));
+    const unsupported = await tab();
+    Object.defineProperty(unsupported.w.navigator, "locks", { value: undefined });
+    const beforeUnsupportedSave = stored.get(storageKey);
+    await unsupported.edit("Research notes", "Session-only without locks");
+    assert(unsupported.d.getElementById("error").textContent.includes("cannot coordinate saves"));
+    assert.equal(stored.get(storageKey), beforeUnsupportedSave);
+    assert.equal((await unsupported.backup()).annotations[alpha].note, "Session-only without locks");
     const debounce = await tab();
     const releaseOldSearch = debounce.holdSearch();
     debounce.d.getElementById("question").value = "why";
