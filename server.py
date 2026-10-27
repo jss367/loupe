@@ -103,9 +103,10 @@ def make_handler(records=None, survey=None):
                     return self.send((ROOT / "survey.html").read_bytes(), mime="text/html; charset=utf-8")
                 if parsed.path == "/api/survey/meta":
                     return self.send(survey.meta())
-                if parsed.path == "/api/survey/responses":
+                if parsed.path in ("/api/survey/responses", "/api/survey/validate"):
                     try:
-                        return self.send(survey.query(parse_qs(parsed.query)))
+                        return self.send(survey.query(parse_qs(parsed.query),
+                                         validate_only=parsed.path == "/api/survey/validate"))
                     except ValueError as exc:
                         return self.send({"error": str(exc)}, 400)
                 if parsed.path.startswith("/api/survey/respondents/"):

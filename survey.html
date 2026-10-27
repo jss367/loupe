@@ -1299,7 +1299,7 @@
             )
               throw Error("Invalid annotation backup");
           }
-          validateCohorts(data.cohorts || {});
+          await validateCohorts(data.cohorts || {});
           state.annotations = { ...state.annotations, ...data.annotations };
           state.cohorts = { ...state.cohorts, ...data.cohorts };
           const persisted = await persist({ annotations: data.annotations, cohorts: data.cohorts || {} });
@@ -1315,7 +1315,7 @@
           event.target.value = "";
         }
       };
-      function validateCohorts(cohorts) {
+      async function validateCohorts(cohorts) {
         if (!cohorts || typeof cohorts !== "object" || Array.isArray(cohorts))
           throw Error("Invalid saved subsets");
         for (const saved of Object.values(cohorts)) {
@@ -1338,6 +1338,10 @@
             (saved.question && !state.questions.has(saved.question))
           )
             throw Error("Invalid saved subset");
+          await api("/api/survey/validate?" + new URLSearchParams({
+            q: saved.q, question: saved.question, sample: saved.sample,
+            completion: saved.completion, filters: JSON.stringify(saved.filters),
+          }));
         }
       }
       $("add-filter").onclick = () => {

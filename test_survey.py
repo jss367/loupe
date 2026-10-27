@@ -151,6 +151,16 @@ class SurveyTests(unittest.TestCase):
         survey = Survey(data)
         self.assertIn("Additional unobserved choice", survey.meta()["questions"][-1]["options"])
 
+    def test_source_rows_are_required_positive_integers(self):
+        for value in (None, 0, -1, 1.5, "4", True):
+            data = example()
+            if value is None:
+                data["respondents"][0].pop("source_row")
+            else:
+                data["respondents"][0]["source_row"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "source_row"):
+                Survey(data)
+
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
@@ -178,6 +188,12 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as raised:
             urlopen(self.url + "/api/survey/respondents/unknown")
         self.assertEqual(raised.exception.code, 404)
+        with urlopen(self.url + "/api/survey/validate") as r:
+            self.assertEqual(json.load(r), {"valid": True})
+        invalid = [{"question": "pace", "op": "gte", "value": "10"}]
+        with self.assertRaises(HTTPError) as raised:
+            urlopen(self.url + "/api/survey/validate?" + urlencode({"filters": json.dumps(invalid)}))
+        self.assertEqual(raised.exception.code, 400)
 
     def test_browser_cross_origin_and_rebound_host_are_rejected(self):
         for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Host": "attacker.example"}):

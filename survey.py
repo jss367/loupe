@@ -70,6 +70,8 @@ class Survey:
             ident = r["id"]
             if not isinstance(ident, str) or not ident or ident in self.respondents:
                 raise ValueError("Respondent IDs must be unique nonempty strings")
+            if type(r.get("source_row")) is not int or r["source_row"] < 1:
+                raise ValueError("Respondents need a positive integer source_row")
             if not isinstance(r["retained"], bool) or not isinstance(r["finished"], bool):
                 raise ValueError("Sample membership and completion must be boolean")
             if not isinstance(r["answers"], dict) or any(
@@ -91,7 +93,7 @@ class Survey:
                 "total": len(self.respondents),
                 "retained": sum(r["retained"] for r in self.respondents.values())}
 
-    def query(self, params):
+    def query(self, params, validate_only=False):
         def get(key, default=""):
             return params.get(key, [default])[0]
 
@@ -118,6 +120,9 @@ class Survey:
                 raise ValueError("Numeric filters require a finite numerical value")
             if op == "eq" and not isinstance(f.get("value"), str):
                 raise ValueError("Equality filters require a string value")
+
+        if validate_only:
+            return {"valid": True}
 
         def matches(r):
             if sample != "all" and r["retained"] != (sample == "retained"):

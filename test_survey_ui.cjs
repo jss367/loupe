@@ -499,6 +499,26 @@ async function storageRegressions(base) {
     assert(unsupported.d.getElementById("error").textContent.includes("cannot coordinate saves"));
     assert.equal(stored.get(storageKey), beforeUnsupportedSave);
     assert.equal((await unsupported.backup()).annotations[alpha].note, "Session-only without locks");
+    const invalidImport = await tab();
+    const validBackup = await invalidImport.backup();
+    const beforeInvalidImport = stored.get(storageKey);
+    for (const filter of [
+      { question: "pace", op: "gte", value: "10" },
+      { question: "pace", op: "lte", value: "10" },
+      { question: "risk", op: "gte", value: "not a number" },
+      { question: "risk", op: "eq", value: "Infinity" },
+    ]) {
+      const invalid = structuredClone(validBackup);
+      invalid.annotations[alpha].note = "Must never be applied";
+      invalid.cohorts.Broken = {
+        q: "", question: "", sample: "retained", completion: "any",
+        tag: "", bookmarked: false, filters: [filter],
+      };
+      await invalidImport.restore(invalid);
+      assert(invalidImport.d.getElementById("error").textContent.includes("Numeric filters require"));
+      assert.equal(stored.get(storageKey), beforeInvalidImport);
+      assert.notEqual(invalidImport.d.querySelector('[aria-label="Research notes"]').value, "Must never be applied");
+    }
     const debounce = await tab();
     const releaseOldSearch = debounce.holdSearch();
     debounce.d.getElementById("question").value = "why";
