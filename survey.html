@@ -616,6 +616,7 @@
           respondent: null,
           request: 0,
           detailRequest: 0,
+          linkRequest: 0,
           mode: "question",
           annotations: {},
           cohorts: {},
@@ -762,6 +763,7 @@
         return params;
       }
       async function refresh() {
+        state.linkRequest++;
         const token = ++state.request;
         state.pending = true;
         $("result-status").textContent = "Searching…";
@@ -886,6 +888,7 @@
         $("next-page").disabled = state.page >= pages - 1;
       }
       async function selectRecord(record, updateHash = true) {
+        state.linkRequest++;
         state.selected = record;
         const token = ++state.detailRequest;
         state.respondent = null;
@@ -1399,6 +1402,8 @@
           );
       };
       async function openHash() {
+        state.detailRequest++;
+        const token = ++state.linkRequest;
         const hash = new URLSearchParams(location.hash.slice(1)),
           rid = hash.get("respondent"),
           qid = hash.get("question");
@@ -1412,6 +1417,7 @@
           const r = await api(
             "/api/survey/respondents/" + encodeURIComponent(rid),
           );
+          if (token !== state.linkRequest) return;
           if (!Object.hasOwn(r.answers, qid))
             throw Error("This respondent did not answer the linked question");
           const record = {
@@ -1424,7 +1430,7 @@
           };
           await selectRecord(record, false);
         } catch (e) {
-          error(e.message);
+          if (token === state.linkRequest) error(e.message);
         }
       }
       window.addEventListener("hashchange", openHash);

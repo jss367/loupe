@@ -1,16 +1,16 @@
 """Dataset-independent survey inspection, with no third-party dependencies."""
 
 import json
-import math
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
 def number(value):
     """Parse an original numeric entry, without silently repairing its value."""
     try:
-        result = float(str(value).strip())
-        return result if math.isfinite(result) else None
-    except (TypeError, ValueError):
+        result = Decimal(str(value).strip())
+        return result if result.is_finite() else None
+    except (InvalidOperation, TypeError, ValueError):
         return None
 
 

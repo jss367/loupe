@@ -93,6 +93,24 @@ class SurveyTests(unittest.TestCase):
         result = self.query(sample="all", filters=json.dumps([{"question": "risk", "op": "lte", "value": "10"}]))
         self.assertEqual(result["cohort_respondents"], 2)
 
+    def test_numeric_filters_preserve_large_and_tiny_original_values(self):
+        data = example()
+        for row, value in zip(data["respondents"], ["9007199254740992", "9007199254740993", "1e-400", "0"]):
+            row["answers"]["risk"] = value
+        survey = Survey(data)
+        def cohort(op, value):
+            return survey.query({"sample": ["all"], "filters": [json.dumps([
+                {"question": "risk", "op": op, "value": value}
+            ])]})["cohort_respondents"]
+        self.assertEqual(cohort("eq", "9007199254740992"), 1)
+        self.assertEqual(cohort("eq", "9007199254740993"), 1)
+        self.assertEqual(cohort("gte", "9007199254740993"), 1)
+        self.assertEqual(cohort("lte", "9007199254740992"), 3)
+        self.assertEqual(cohort("eq", "1e-400"), 1)
+        self.assertEqual(cohort("eq", "0"), 1)
+        self.assertEqual(cohort("lte", "1e-401"), 1)
+        self.assertEqual(number("10.0"), number("1e1"))
+
     def test_bad_queries_fail_instead_of_broadening_the_subset(self):
         for params in ({"question": "risk"}, {"sample": "unknown"}, {"filters": "{}"},
                        {"filters": json.dumps([{"question": "risk", "op": "gte", "value": "NaN"}])},

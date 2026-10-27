@@ -225,13 +225,20 @@ async function storageRegressions(base) {
   const pause = () => new Promise((r) => setTimeout(r, 20));
   async function tab(hash = "", expectedText = "") {
     const downloads = [];
+    let holdId = null, releaseFetch = null;
     const dom = new JSDOM(html, {
       url: base + hash,
       runScripts: "dangerously",
       pretendToBeVisual: true,
       virtualConsole: new VirtualConsole(),
       beforeParse(w) {
-        w.fetch = (path) => fetch(new URL(path, base));
+        w.fetch = (path) => {
+          if (holdId !== null && path === "/api/survey/respondents/" + encodeURIComponent(holdId)) {
+            holdId = null;
+            return new Promise((resolve) => { releaseFetch = () => resolve(fetch(new URL(path, base))); });
+          }
+          return fetch(new URL(path, base));
+        };
         w.structuredClone = structuredClone;
         w.Blob = Blob;
         w.URL.createObjectURL = (blob) => { downloads.push(blob); return "blob:synthetic"; };
@@ -255,6 +262,15 @@ async function storageRegressions(base) {
     assert(d.querySelector('[aria-label="Research notes"]'), "response loaded");
     return {
       w, d,
+      holdRespondent(id) {
+        holdId = id;
+        releaseFetch = null;
+        return async () => {
+          assert(releaseFetch, "linked respondent request was held");
+          releaseFetch();
+          await pause();
+        };
+      },
       edit(label, value) {
         const input = d.querySelector(`[aria-label="${label}"]`);
         input.value = value;
@@ -393,6 +409,23 @@ async function storageRegressions(base) {
     assert.equal(unicodeBackup.annotations[JSON.stringify(["élève 🐦", "réponse 🐦"])].note, "Unicode follow-up note");
     const unicodeReloaded = await tab(unicode.w.location.hash, "Unicode synthetic follow-up");
     assert.equal(unicodeReloaded.d.querySelector('[aria-label="Research notes"]').value, "Unicode follow-up note");
+    const race = await tab();
+    let release = race.holdRespondent("alpha");
+    race.w.location.hash = "#respondent=alpha&question=comments";
+    await pause();
+    [...race.d.querySelectorAll("#records button")].find((b) => b.textContent.includes("A different interpretation")).click();
+    await pause();
+    await release();
+    assert(race.w.location.hash.includes("respondent=beta"));
+    assert(race.d.getElementById("detail").textContent.includes("A different interpretation"));
+    release = race.holdRespondent("gamma");
+    race.w.location.hash = "#respondent=gamma&question=why";
+    await pause();
+    race.w.location.hash = "#respondent=beta&question=why";
+    await pause();
+    await release();
+    assert(race.w.location.hash.includes("respondent=beta"));
+    assert(race.d.getElementById("detail").textContent.includes("A different interpretation"));
   } finally {
     for (const w of windows) w.close();
   }
