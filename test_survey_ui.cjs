@@ -103,6 +103,8 @@ test("survey inspection and annotation workflows", async () => {
       assert.equal($("text-count").textContent, "2");
       assert.equal($("response-count").textContent, "3");
       assert.equal(d.querySelector("#detail img"), null);
+      assert($("detail").textContent.includes("CSV record 4"));
+      assert(!$("detail").textContent.includes("3 header records"));
       assert($("detail").textContent.includes('<img src="x"'));
       await change("search", "evaluation", "input");
       await until(() => $("response-count").textContent === "1");
@@ -195,6 +197,7 @@ test("survey inspection and annotation workflows", async () => {
       dom.window.close();
     }
     await run();
+    await storageRegressions(base);
   } finally {
     if (dom) dom.window.close();
     server.kill();
@@ -205,3 +208,109 @@ test("survey inspection and annotation workflows", async () => {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+async function storageRegressions(base) {
+  const stored = new Map();
+  const storageKey = "loupe-survey:synthetic-survey";
+  const windows = [];
+  let failWrites = false;
+  const pause = () => new Promise((r) => setTimeout(r, 20));
+  async function tab(hash = "") {
+    const downloads = [];
+    const dom = new JSDOM(html, {
+      url: base + hash,
+      runScripts: "dangerously",
+      pretendToBeVisual: true,
+      virtualConsole: new VirtualConsole(),
+      beforeParse(w) {
+        w.fetch = (path) => fetch(new URL(path, base));
+        w.structuredClone = structuredClone;
+        w.Blob = Blob;
+        w.URL.createObjectURL = (blob) => { downloads.push(blob); return "blob:synthetic"; };
+        w.URL.revokeObjectURL = () => {};
+        Object.defineProperty(w, "localStorage", { value: {
+          getItem: (key) => stored.get(key) || null,
+          setItem(key, value) {
+            if (failWrites) throw Error("Synthetic quota failure");
+            stored.set(key, value);
+          },
+        } });
+      },
+    });
+    windows.push(dom.window);
+    const w = dom.window, d = w.document;
+    for (let i = 0; i < 100; i++) {
+      const expected = hash.includes("beta") ? "A different interpretation" : "Progress depends";
+      if (d.querySelector("#detail")?.textContent.includes(expected)) break;
+      await pause();
+    }
+    assert(d.querySelector('[aria-label="Research notes"]'), "response loaded");
+    return {
+      w, d,
+      edit(label, value) {
+        const input = d.querySelector(`[aria-label="${label}"]`);
+        input.value = value;
+        input.dispatchEvent(new w.Event("input"));
+      },
+      subset(name) {
+        d.getElementById("cohort-name").value = name;
+        d.getElementById("save-cohort").click();
+      },
+      async restore(backup) {
+        const input = d.getElementById("notes-file");
+        Object.defineProperty(input, "files", {
+          value: [{ text: async () => JSON.stringify(backup) }], configurable: true,
+        });
+        input.dispatchEvent(new w.Event("change"));
+        await pause();
+      },
+      async backup() {
+        d.getElementById("export-notes").click();
+        return JSON.parse(await downloads.at(-1).text());
+      },
+    };
+  }
+  try {
+    const a = await tab(), b = await tab("#respondent=beta&question=why"), stale = await tab();
+    a.edit("Research notes", "Alpha tab note");
+    b.edit("Research notes", "Beta tab note");
+    a.subset("First subset");
+    b.subset("Second subset");
+    const alpha = JSON.stringify(["alpha", "why"]), beta = JSON.stringify(["beta", "why"]);
+    let saved = JSON.parse(stored.get(storageKey));
+    assert.equal(saved.annotations[alpha].note, "Alpha tab note");
+    assert.equal(saved.annotations[beta].note, "Beta tab note");
+    assert.deepEqual(Object.keys(saved.cohorts).sort(), ["First subset", "Second subset"]);
+    a.d.getElementById("cohort-list").value = "First subset";
+    a.d.getElementById("delete-cohort").click();
+    b.subset("Third subset");
+    stale.edit("Tags for this response", "cross-tab");
+    stale.edit("Research notes", "Last alpha save");
+    saved = JSON.parse(stored.get(storageKey));
+    assert.equal(saved.annotations[alpha].note, "Last alpha save");
+    assert.deepEqual(saved.annotations[alpha].tags, ["cross-tab"]);
+    assert.equal(saved.annotations[alpha].bookmark, false);
+    assert(!Object.hasOwn(saved.cohorts, "First subset"), "stale tab must not revive deleted subsets");
+    const reloaded = await tab();
+    assert.equal(reloaded.d.querySelector('[aria-label="Research notes"]').value, "Last alpha save");
+    assert.equal(reloaded.d.querySelector('[aria-label="Tags for this response"]').value, "cross-tab");
+    assert.equal(JSON.parse(stored.get(storageKey)).annotations[beta].note, "Beta tab note");
+    const backup = await reloaded.backup();
+    backup.annotations[alpha].note = "Imported session-only note";
+    failWrites = true;
+    await reloaded.restore(backup);
+    assert(reloaded.d.getElementById("error").textContent.includes("Changes remain in this session"));
+    assert(!reloaded.d.getElementById("error").textContent.includes("Backup restored"));
+    reloaded.subset("Session subset");
+    assert(reloaded.d.getElementById("error").textContent.includes("Back up tags & notes"));
+    assert.equal((await reloaded.backup()).annotations[alpha].note, "Imported session-only note");
+    failWrites = false;
+    reloaded.edit("Tags for this response", "recovered");
+    assert(!reloaded.d.getElementById("error").textContent.includes("session"));
+    saved = JSON.parse(stored.get(storageKey));
+    assert.equal(saved.annotations[alpha].note, "Imported session-only note");
+    assert(Object.hasOwn(saved.cohorts, "Session subset"));
+  } finally {
+    for (const w of windows) w.close();
+  }
+}

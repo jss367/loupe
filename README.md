@@ -163,6 +163,13 @@ The conversation loader, labels, source information, and audit examples remain
 specific to Gloom. Other surveys can use the interchange format above. Other
 conversation and trajectory datasets still need an importer and corresponding
 metadata support; arbitrary Parquet or JSON files are not accepted.
+
+Survey annotation saves read the latest browser notebook before applying the
+edited field or subset. Edits to different responses, annotation fields, or
+subset names are preserved across tabs; for the same field or subset name, the
+last successful save wins. Storage failures leave a persistent backup warning
+until a save succeeds. Keep notebook backups for recovery.
+
 ## Development checks
 
 The app itself only needs the Python dependencies above. Automated checks additionally use Node.js 22 or newer:

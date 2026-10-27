@@ -128,6 +128,23 @@ class ServerTests(unittest.TestCase):
                 urlopen(Request(self.url + "/api/survey/meta", headers=headers))
             self.assertEqual(raised.exception.code, 403)
 
+    def test_default_http_port_accepts_portless_loopback_authorities(self):
+        # Advertise port 80 without requiring a privileged or unoccupied socket.
+        self.server.server_port = 80
+        for host in ("127.0.0.1", "localhost", "127.0.0.1:80", "localhost:80"):
+            with self.subTest(host=host), urlopen(Request(self.url + "/api/survey/meta", headers={"Host": host})) as r:
+                self.assertEqual(r.status, 200)
+        for host in ("attacker.example", "localhost:81", "127.0.0.1.attacker.example"):
+            with self.subTest(host=host), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(self.url + "/api/survey/meta", headers={"Host": host}))
+            self.assertEqual(raised.exception.code, 403)
+
+    def test_nondefault_port_requires_matching_explicit_port(self):
+        for host in ("127.0.0.1", "localhost", "localhost:80"):
+            with self.subTest(host=host), self.assertRaises(HTTPError) as raised:
+                urlopen(Request(self.url + "/api/survey/meta", headers={"Host": host}))
+            self.assertEqual(raised.exception.code, 403)
+
     def test_existing_trajectory_mode(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler({}))
         thread = threading.Thread(target=server.serve_forever, daemon=True)

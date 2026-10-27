@@ -91,9 +91,12 @@ def make_handler(records=None, survey=None):
             # Reject cross-origin reads (including browser DNS rebinding).
             if self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
                 return self.send({"error": "Local same-origin requests only"}, 403)
-            if self.headers.get("Host") not in (
+            allowed_hosts = {
                     f"127.0.0.1:{self.server.server_port}",
-                    f"localhost:{self.server.server_port}"):
+                    f"localhost:{self.server.server_port}"}
+            if self.server.server_port == 80:
+                allowed_hosts.update({"127.0.0.1", "localhost"})
+            if self.headers.get("Host") not in allowed_hosts:
                 return self.send({"error": "Invalid local host"}, 403)
             if survey is not None:
                 if parsed.path in ("/", "/index.html"):

@@ -620,10 +620,12 @@
           annotations: {},
           cohorts: {},
           pending: false,
+          storageWarning: "",
         };
+      let pendingAnnotations = {}, pendingCohorts = {};
       const annotationKey = (rid, qid) => JSON.stringify([rid, qid]);
       function error(message = "") {
-        $("error").textContent = message;
+        $("error").textContent = [message, state.storageWarning].filter(Boolean).join(" ");
       }
       async function api(path) {
         const response = await fetch(path),
@@ -685,8 +687,26 @@
           }
         );
       }
-      function persist() {
+      function persist({ annotations = {}, cohorts = {} } = {}) {
+        // Re-read before every write so stale tabs only replace fields they edit.
+        // For the same field or subset name, the last successful save wins.
+        for (const [key, patch] of Object.entries(annotations)) {
+          pendingAnnotations[key] = { ...pendingAnnotations[key], ...patch };
+        }
+        pendingCohorts = { ...pendingCohorts, ...cohorts };
         try {
+          const saved = JSON.parse(localStorage.getItem("loupe-survey:" + state.meta.id) || "{}");
+          const mergedAnnotations = { ...saved.annotations };
+          const mergedCohorts = { ...saved.cohorts };
+          for (const [key, patch] of Object.entries(pendingAnnotations)) {
+            mergedAnnotations[key] = { bookmark: false, tags: [], note: "", ...mergedAnnotations[key], ...patch };
+          }
+          for (const [name, value] of Object.entries(pendingCohorts)) {
+            if (value === null) delete mergedCohorts[name];
+            else Object.defineProperty(mergedCohorts, name, { value, enumerable: true, configurable: true, writable: true });
+          }
+          state.annotations = mergedAnnotations;
+          state.cohorts = mergedCohorts;
           localStorage.setItem(
             "loupe-survey:" + state.meta.id,
             JSON.stringify({
@@ -694,10 +714,16 @@
               cohorts: state.cohorts,
             }),
           );
+          pendingAnnotations = {};
+          pendingCohorts = {};
+          state.storageWarning = "";
+          error();
+          renderCohorts();
+          return true;
         } catch {
-          error(
-            "Browser storage is unavailable or full. Changes remain in this session; use Back up tags & notes to save them.",
-          );
+          state.storageWarning = "Browser storage is unavailable or full. Changes remain in this session; use Back up tags & notes to save them.";
+          error();
+          return false;
         }
       }
       function currentFilters() {
@@ -952,7 +978,7 @@
                 bookmark: !annotation(selected).bookmark,
               };
               state.annotations[selected.id] = a;
-              persist();
+              persist({ annotations: { [selected.id]: { bookmark: a.bookmark } } });
               updateVisible();
               renderDetail();
             },
@@ -981,7 +1007,7 @@
               r.id +
               " · CSV record " +
               r.source_row +
-              " (including 3 header records) · " +
+              " · " +
               (r.retained ? "Retained row" : "Outside retained set") +
               " · " +
               (r.finished ? "Finished" : "Incomplete"),
@@ -1008,7 +1034,7 @@
             "Saved in this browser. Tags describe your review; they are not survey answers.",
           ),
         );
-        function save() {
+        function save(field) {
           state.annotations[selected.id] = {
             ...annotation(selected),
             tags: [
@@ -1021,11 +1047,11 @@
             ],
             note: note.value,
           };
-          persist();
+          persist({ annotations: { [selected.id]: { [field]: state.annotations[selected.id][field] } } });
           renderList();
         }
-        tags.oninput = save;
-        note.oninput = save;
+        tags.oninput = () => save("tags");
+        note.oninput = () => save("note");
         tags.onchange = () => updateVisible();
         detail.append(annotations);
         if (state.mode === "respondent") {
@@ -1252,11 +1278,11 @@
           validateCohorts(data.cohorts || {});
           state.annotations = { ...state.annotations, ...data.annotations };
           state.cohorts = { ...state.cohorts, ...data.cohorts };
-          persist();
+          const persisted = persist({ annotations: data.annotations, cohorts: data.cohorts || {} });
           renderCohorts();
           updateVisible();
           renderDetail();
-          error(
+          if (persisted) error(
             "Backup restored. Entries in the backup replace entries with the same response or subset name.",
           );
         } catch (e) {
@@ -1304,10 +1330,10 @@
         const name = $("cohort-name").value.trim();
         if (!name) return error("Give the subset a name.");
         state.cohorts = { ...state.cohorts, [name]: currentFilters() };
-        persist();
+        const persisted = persist({ cohorts: { [name]: state.cohorts[name] } });
         renderCohorts();
         $("cohort-list").value = name;
-        error();
+        if (persisted) error();
       };
       $("cohort-list").onchange = () => {
         const saved = state.cohorts[$("cohort-list").value];
@@ -1317,7 +1343,7 @@
         const name = $("cohort-list").value;
         if (Object.hasOwn(state.cohorts, name)) {
           delete state.cohorts[name];
-          persist();
+          persist({ cohorts: { [name]: null } });
           renderCohorts();
         }
       };
