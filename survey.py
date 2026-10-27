@@ -55,11 +55,17 @@ class Survey:
                 raise ValueError("Question IDs must be unique nonempty strings")
             if q["kind"] not in {"text", "number", "category"} or not isinstance(q["wording"], str):
                 raise ValueError("Invalid question definition")
+            if q["kind"] == "category" and (
+                    not isinstance(q.get("options"), list) or
+                    any(not isinstance(option, str) for option in q["options"])):
+                raise ValueError("Category options must be an array of strings")
             if any(not isinstance(q.get(k), str) for k in ("section", "variable", "raw_variable")):
                 raise ValueError("Questions need section and variable provenance")
             if type(q.get("occurrence")) is not int or q["occurrence"] < 1:
                 raise ValueError("Question occurrences must be positive integers")
             self.questions[ident] = q
+        category_options = {q["id"]: set(q["options"]) for q in self.questions.values()
+                            if q["kind"] == "category"}
         for r in dataset["respondents"]:
             ident = r["id"]
             if not isinstance(ident, str) or not ident or ident in self.respondents:
@@ -70,6 +76,9 @@ class Survey:
                     q not in self.questions or not isinstance(v, str) or not v.strip()
                     for q, v in r["answers"].items()):
                 raise ValueError("Answers must be nonempty strings referencing known questions")
+            if any(q in category_options and value not in category_options[q]
+                   for q, value in r["answers"].items()):
+                raise ValueError("Category options must cover every observed category answer")
             self.respondents[ident] = r
 
     @classmethod

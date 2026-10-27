@@ -136,6 +136,21 @@ class SurveyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Survey(data)
 
+    def test_category_options_validate_shape_and_cover_observed_answers(self):
+        for options in (None, "Slower", {"Slower": True}, ["Slower", 1], ["Slower"], []):
+            data = example()
+            question = data["questions"][-1]
+            if options is None:
+                question.pop("options")
+            else:
+                question["options"] = options
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Category options"):
+                Survey(data)
+        data = example()
+        data["questions"][-1]["options"].append("Additional unobserved choice")
+        survey = Survey(data)
+        self.assertIn("Additional unobserved choice", survey.meta()["questions"][-1]["options"])
+
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
