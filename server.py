@@ -32,6 +32,35 @@ def content_text(content):
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
 
 
+def _js_numbers(value):
+    """JSON.stringify prints integral floats without a fraction; mirror that."""
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e21:
+        return int(value)
+    if isinstance(value, list):
+        return [_js_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _js_numbers(item) for key, item in value.items()}
+    return value
+
+
+def _reject_constant(name):
+    raise ValueError(f"JSON.parse rejects {name}")
+
+
+def render_text(value):
+    """Mirror stringContent in app.mjs so indexed text equals visible text:
+    null renders empty, JSON values pretty-print with two-space indent, and a
+    string that parses as JSON is re-rendered the same way."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value, parse_constant=_reject_constant)
+        except ValueError:
+            return value
+    return json.dumps(_js_numbers(value), ensure_ascii=False, indent=2)
+
+
 LABEL_VALUES = {"0": 0, "1": 1, "benign": 0, "scheming": 1, "false": 0, "true": 1, "negative": 0, "positive": 1}
 
 
@@ -64,10 +93,10 @@ def message_text(message, tool_names):
     """Searchable text for one message: content, each tool call's name and
     arguments, and the message's own and linked tool names. Only fields the
     interface renders are indexed, so every match is visible in the view."""
-    pieces = [content_text(message.get("content", ""))]
+    pieces = [render_text(message.get("content"))]
     for call in message.get("tool_calls") or []:
         pieces.append(str(call_name(call) or "Tool call"))
-        pieces.append(content_text(call_arguments(call)))
+        pieces.append(render_text(call_arguments(call)))
     if message.get("name"):
         pieces.append(str(message["name"]))
     if message.get("tool_call_id") in tool_names:

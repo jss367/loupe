@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from server import MAX_PATTERN, filter_records, load_conversations, make_record, normalize_label, parse_query, unsafe_pattern
+from server import MAX_PATTERN, filter_records, load_conversations, make_record, normalize_label, parse_query, render_text, unsafe_pattern
 
 MESSAGES = [
     {"role": "system", "content": "Inspect the evidence."},
@@ -68,6 +68,29 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(found("function"), [])
         self.assertEqual(found("visible"), ["all-0000-c"])
         self.assertEqual(found("null"), [])
+
+    def test_indexed_text_matches_rendered_text(self):
+        # Mirrors stringContent in app.mjs: JSON.stringify(value, null, 2) semantics.
+        self.assertEqual(render_text(None), "")
+        self.assertEqual(render_text("plain text"), "plain text")
+        self.assertEqual(render_text(""), "")
+        self.assertEqual(render_text([1, 2]), "[\n  1,\n  2\n]")
+        self.assertEqual(render_text('{"cmd":"ls","n":2.0}'), '{\n  "cmd": "ls",\n  "n": 2\n}')
+        self.assertEqual(render_text("123"), "123")
+        self.assertEqual(render_text("NaN"), "NaN")
+        self.assertEqual(render_text({"a": {}, "b": [], "c": False, "d": None}), '{\n  "a": {},\n  "b": [],\n  "c": false,\n  "d": null\n}')
+        messages = [
+            {"role": "user", "content": None},
+            {"role": "assistant", "content": '{"k":"v"}', "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": "[1, 2]"}}]},
+            {"role": "tool", "tool_call_id": "c", "content": [1, 2]},
+        ]
+        record = {"all-0000-p": make_record("all-0000-p", "p", 0, "all", {"messages": messages}, None)}
+        found = lambda q: [r["id"] for r in filter_records(record, {"q": [q]})]
+        self.assertEqual(found("null"), [])
+        self.assertEqual(found('"1, 2"'), [])
+        self.assertEqual(found('"k": "v"'), ["all-0000-p"])
+        self.assertEqual(found('"1,"'), ["all-0000-p"])
+        self.assertEqual(record["all-0000-p"]["messages"][0]["text"], "")
 
     def test_scoped_terms_ignore_trajectory_ids(self):
         self.assertEqual(search(q="train-0001"), ["train-0001-b"])
