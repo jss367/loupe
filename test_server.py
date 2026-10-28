@@ -56,7 +56,8 @@ class QueryTests(unittest.TestCase):
     def test_only_rendered_tool_call_fields_are_indexed(self):
         messages = [{"role": "assistant", "content": "go", "tool_calls": [
             {"id": "call_secret_7", "type": "function", "function": {"name": "Bash", "arguments": '{"cmd":"ls"}'}},
-            {"id": "call_8", "name": "lookup", "args": {"key": "needle"}}]}]
+            {"id": "call_8", "name": "lookup", "args": {"key": "needle"}},
+            {"id": "call_9", "args": None, "function": {"name": "fallback", "arguments": '{"visible":"argument"}'}}]}]
         calls = {"all-0000-c": make_record("all-0000-c", "c", 0, "all", {"messages": messages}, None)}
         found = lambda q: [r["id"] for r in filter_records(calls, {"q": [q]})]
         self.assertEqual(found("bash"), ["all-0000-c"])
@@ -65,6 +66,8 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(found("needle"), ["all-0000-c"])
         self.assertEqual(found("call_secret_7"), [])
         self.assertEqual(found("function"), [])
+        self.assertEqual(found("visible"), ["all-0000-c"])
+        self.assertEqual(found("null"), [])
 
     def test_scoped_terms_ignore_trajectory_ids(self):
         self.assertEqual(search(q="train-0001"), ["train-0001-b"])

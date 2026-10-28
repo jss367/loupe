@@ -53,9 +53,11 @@ def call_name(call):
 
 
 def call_arguments(call):
-    if "args" in call:
-        return call["args"]
-    return (call.get("function") or {}).get("arguments", {})
+    """Same nullish fallback as the renderer: args, else function.arguments, else {}."""
+    args = call.get("args")
+    if args is None:
+        args = (call.get("function") or {}).get("arguments")
+    return {} if args is None else args
 
 
 def message_text(message, tool_names):
