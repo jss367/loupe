@@ -102,9 +102,9 @@ class Survey:
         sample, completion = get("sample", "retained"), get("completion", "any")
         if sample not in {"all", "retained", "excluded"} or completion not in {"any", "finished", "incomplete"}:
             raise ValueError("Invalid sample or completion filter")
-        question, search = get("question"), get("q").strip().casefold()
-        if question and (question not in self.questions or self.questions[question]["kind"] != "text"):
-            raise ValueError("Select a free-response question")
+        questions, search = set(params.get("question", [])) - {""}, get("q").strip().casefold()
+        if any(q not in self.questions or self.questions[q]["kind"] != "text" for q in questions):
+            raise ValueError("Select free-response questions")
         try:
             filters = json.loads(get("filters", "[]"))
         except (ValueError, TypeError) as exc:
@@ -150,7 +150,7 @@ class Survey:
         records, authors = [], set()
         for r in cohort:
             for q, text in r["answers"].items():
-                if self.questions[q]["kind"] != "text" or (question and q != question):
+                if self.questions[q]["kind"] != "text" or (questions and q not in questions):
                     continue
                 authors.add(r["id"])
                 if search and search not in text.casefold():

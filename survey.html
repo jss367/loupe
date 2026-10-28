@@ -163,6 +163,36 @@
         font-size: 11px;
         color: var(--muted);
       }
+      #question-picker {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+      }
+      #question-summary {
+        padding: 8px 10px;
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      #question-summary:focus-visible {
+        outline: 2px solid var(--green);
+      }
+      #question-options {
+        max-height: 320px;
+        overflow-y: auto;
+        border-top: 1px solid var(--line);
+        padding: 6px;
+      }
+      #question-options .check {
+        align-items: flex-start;
+        padding: 7px 4px;
+        margin: 0;
+        overflow-wrap: anywhere;
+        cursor: pointer;
+      }
+      #question-options input {
+        flex-shrink: 0;
+        margin-top: 3px;
+      }
       .main {
         min-width: 0;
         min-height: 0;
@@ -501,10 +531,17 @@
           />
         </div>
         <div class="control">
-          <label for="question">Free-response question</label
-          ><select id="question">
-            <option value="">All free-response questions</option>
-          </select>
+          <label id="question-label">Free-response questions</label>
+          <details id="question-picker">
+            <summary id="question-summary" aria-labelledby="question-label question-summary-text" aria-describedby="question-hint">
+              <span id="question-summary-text">All free-response questions</span>
+            </summary>
+            <div id="question-options">
+              <button id="all-questions" type="button">All free-response questions</button>
+              <div id="question" role="group" aria-labelledby="question-label"></div>
+            </div>
+          </details>
+          <p class="hint" id="question-hint">Select any combination. Leave all unchecked to include every question.</p>
         </div>
         <div class="pair">
           <div class="control">
@@ -734,7 +771,7 @@
       function currentFilters() {
         return {
           q: $("search").value,
-          question: $("question").value,
+          questions: selectedQuestions(),
           sample: $("sample").value,
           completion: $("completion").value,
           bookmarked: $("bookmarked").checked,
@@ -744,7 +781,10 @@
       }
       function applyFilters(saved) {
         $("search").value = saved.q || "";
-        $("question").value = saved.question || "";
+        const questions = saved.questions ?? (saved.question ? [saved.question] : []);
+        for (const input of $("question").querySelectorAll("input"))
+          input.checked = questions.includes(input.value);
+        renderQuestionSummary();
         $("sample").value = saved.sample || "retained";
         $("completion").value = saved.completion || "any";
         $("bookmarked").checked = !!saved.bookmarked;
@@ -756,12 +796,23 @@
       function queryParams() {
         const params = new URLSearchParams({
           q: $("search").value,
-          question: $("question").value,
           sample: $("sample").value,
           completion: $("completion").value,
           filters: JSON.stringify(state.filters),
         });
+        for (const question of selectedQuestions()) params.append("question", question);
         return params;
+      }
+      function selectedQuestions() {
+        return [...$("question").querySelectorAll("input:checked")].map((input) => input.value);
+      }
+      function renderQuestionSummary() {
+        const questions = selectedQuestions();
+        $("question-summary-text").textContent = questions.length === 0
+          ? "All free-response questions"
+          : questions.length === 1
+            ? prompt(state.questions.get(questions[0]))
+            : questions.length + " questions selected";
       }
       async function refresh() {
         state.linkRequest++;
@@ -1334,14 +1385,21 @@
             !["any", "finished", "incomplete"].includes(saved.completion) ||
             typeof saved.q !== "string" ||
             typeof saved.tag !== "string" ||
-            typeof saved.question !== "string" ||
-            (saved.question && !state.questions.has(saved.question))
+            (saved.questions !== undefined
+              ? !Array.isArray(saved.questions) || saved.questions.some(
+                  (id) => typeof id !== "string" || state.questions.get(id)?.kind !== "text",
+                )
+              : typeof saved.question !== "string" ||
+                (saved.question && state.questions.get(saved.question)?.kind !== "text"))
           )
             throw Error("Invalid saved subset");
-          await api("/api/survey/validate?" + new URLSearchParams({
-            q: saved.q, question: saved.question, sample: saved.sample,
+          const params = new URLSearchParams({
+            q: saved.q, sample: saved.sample,
             completion: saved.completion, filters: JSON.stringify(saved.filters),
-          }));
+          });
+          for (const id of saved.questions ?? (saved.question ? [saved.question] : []))
+            params.append("question", id);
+          await api("/api/survey/validate?" + params);
         }
       }
       $("add-filter").onclick = () => {
@@ -1384,8 +1442,23 @@
         $("export-data").disabled = true;
         timer = setTimeout(refresh, 200);
       };
-      for (const id of ["question", "sample", "completion"])
+      for (const id of ["sample", "completion"])
         $(id).onchange = () => refresh();
+      $("question").onchange = () => {
+        renderQuestionSummary();
+        refresh();
+      };
+      $("all-questions").onclick = () => {
+        for (const input of $("question").querySelectorAll("input")) input.checked = false;
+        renderQuestionSummary();
+        refresh();
+      };
+      $("question-picker").onkeydown = (event) => {
+        if (event.key === "Escape") {
+          $("question-picker").open = false;
+          $("question-summary").focus();
+        }
+      };
       $("bookmarked").onchange = () => {
         state.page = 0;
         updateVisible();
@@ -1454,8 +1527,13 @@
             state.meta.description ||
             "Local survey exploration. Counts refer to rows and observed answers, not population prevalence.";
           document.title = "Loupe · " + $("title").textContent;
-          for (const q of state.meta.questions.filter((q) => q.kind === "text"))
-            option($("question"), q.id, prompt(q));
+          for (const q of state.meta.questions.filter((q) => q.kind === "text")) {
+            const label = el("label", "check"), input = el("input");
+            input.type = "checkbox";
+            input.value = q.id;
+            label.append(input, el("span", "", prompt(q)));
+            $("question").append(label);
+          }
           try {
             const saved = JSON.parse(
               localStorage.getItem("loupe-survey:" + state.meta.id) || "{}",

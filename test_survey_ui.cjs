@@ -7,6 +7,12 @@ const { spawn, execFileSync } = require("node:child_process");
 const { test } = require("node:test");
 const root = __dirname;
 const html = fs.readFileSync(path.join(root, "survey.html"), "utf8");
+function selectQuestions(w, questions) {
+  const group = w.document.getElementById("question");
+  for (const input of group.querySelectorAll("input"))
+    input.checked = questions.includes(input.value);
+  group.dispatchEvent(new w.Event("change", { bubbles: true }));
+}
 const lockQueues = new Map();
 const locks = {
   request(name, callback) {
@@ -123,8 +129,48 @@ test("survey inspection and annotation workflows", async () => {
       assert($("detail").textContent.includes("CSV record 4"));
       assert(!$("detail").textContent.includes("3 header records"));
       assert($("detail").textContent.includes('<img src="x"'));
+      await change("sample", "all");
+      for (const input of d.querySelectorAll("#question input"))
+        if (["comments", "réponse 🐦"].includes(input.value)) input.click();
+      await until(() => $("response-count").textContent === "2");
+      assert.equal($("question-summary-text").textContent, "2 questions selected");
+      assert.equal($("text-count").textContent, "2");
+      assert.equal($("people-count").textContent, "2");
+      assert.equal($("cohort-count").textContent, "5");
+      $("export-data").click();
+      const selectedCsv = await downloads.at(-1).text();
+      assert(selectedCsv.includes('"comments"'));
+      assert(selectedCsv.includes('"réponse 🐦"'));
+      assert(!selectedCsv.includes('"why"'));
+      await change("search", "follow-up", "input");
+      await until(() => $("response-count").textContent === "1");
+      assert.equal($("text-count").textContent, "2");
+      await change("search", "", "input");
+      await until(() => $("response-count").textContent === "2");
+      await change("cohort-name", "Selected questions");
+      $("save-cohort").click();
+      await pause();
+      $("reset").click();
+      await until(() => $("response-count").textContent === "3");
+      await change("cohort-list", "Selected questions");
+      await until(() => $("response-count").textContent === "2");
+      assert.deepEqual([...d.querySelectorAll("#question input:checked")].map((i) => i.value), ["comments", "réponse 🐦"]);
+      $("export-notes").click();
+      const selectedBackup = JSON.parse(await downloads.at(-1).text());
+      assert.deepEqual(selectedBackup.cohorts["Selected questions"].questions, ["comments", "réponse 🐦"]);
+      $("all-questions").click();
+      await until(() => $("response-count").textContent === "6");
+      assert.equal($("question-summary-text").textContent, "All free-response questions");
+      selectQuestions(w, ["comments"]);
+      await until(() => $("response-count").textContent === "1");
+      assert($("question-summary-text").textContent.includes("Any other comments?"));
+      selectQuestions(w, []);
+      await until(() => $("response-count").textContent === "6");
+      $("reset").click();
+      await until(() => $("response-count").textContent === "3");
       await change("search", "evaluation", "input");
       await until(() => $("response-count").textContent === "1");
+      await until(() => d.querySelector("#detail mark"));
       assert.equal(d.querySelector("#detail mark").textContent, "evaluation");
       await change("search", "", "input");
       await until(() => $("response-count").textContent === "3");
@@ -204,7 +250,7 @@ test("survey inspection and annotation workflows", async () => {
       await select("Value 1", "Faster");
       await until(() => $("response-count").textContent === "1");
       assert($("detail").textContent.includes("A different interpretation"));
-      await change("question", "comments");
+      selectQuestions(w, ["comments"]);
       await until(() => $("response-count").textContent === "0");
       assert($("detail").textContent.includes("No responses match"));
       assert.deepEqual(failures, []);
@@ -414,8 +460,7 @@ async function storageRegressions(base) {
     await linked.edit("Research notes", "Linked note");
     assert.equal((await linked.backup()).annotations[JSON.stringify(["gamma", "why"])].note, "Linked note");
     const related = await tab();
-    related.d.getElementById("question").value = "why";
-    related.d.getElementById("question").dispatchEvent(new related.w.Event("change"));
+    selectQuestions(related.w, ["why"]);
     await pause();
     [...related.d.querySelectorAll("#detail button")].find((b) => b.textContent === "All respondent answers").click();
     [...related.d.querySelectorAll("#detail button")].find((b) => b.textContent === "Read and tag this response").click();
@@ -501,7 +546,27 @@ async function storageRegressions(base) {
     assert.equal((await unsupported.backup()).annotations[alpha].note, "Session-only without locks");
     const invalidImport = await tab();
     const validBackup = await invalidImport.backup();
+    const multiBackup = structuredClone(validBackup);
+    const subsetDefaults = {
+      q: "", sample: "all", completion: "any", tag: "", bookmarked: false, filters: [],
+    };
+    multiBackup.cohorts["Imported questions"] = { ...subsetDefaults, questions: ["comments", "réponse 🐦"] };
+    multiBackup.cohorts["Legacy question"] = { ...subsetDefaults, question: "comments" };
+    await invalidImport.restore(multiBackup);
+    for (const [name, questions] of [["Imported questions", ["comments", "réponse 🐦"]], ["Legacy question", ["comments"]]]) {
+      invalidImport.d.getElementById("cohort-list").value = name;
+      invalidImport.d.getElementById("cohort-list").dispatchEvent(new invalidImport.w.Event("change"));
+      await pause();
+      assert.deepEqual([...invalidImport.d.querySelectorAll("#question input:checked")].map((i) => i.value), questions);
+    }
     const beforeInvalidImport = stored.get(storageKey);
+    for (const questions of [["why", "risk"], ["unknown"], "why"]) {
+      const invalid = structuredClone(validBackup);
+      invalid.cohorts.Broken = { ...subsetDefaults, questions };
+      await invalidImport.restore(invalid);
+      assert(invalidImport.d.getElementById("error").textContent.includes("Invalid saved subset"));
+      assert.equal(stored.get(storageKey), beforeInvalidImport);
+    }
     for (const filter of [
       { question: "pace", op: "gte", value: "10" },
       { question: "pace", op: "lte", value: "10" },
@@ -521,8 +586,7 @@ async function storageRegressions(base) {
     }
     const debounce = await tab();
     const releaseOldSearch = debounce.holdSearch();
-    debounce.d.getElementById("question").value = "why";
-    debounce.d.getElementById("question").dispatchEvent(new debounce.w.Event("change"));
+    selectQuestions(debounce.w, ["why"]);
     await pause();
     debounce.d.getElementById("search").value = "A query with no synthetic matches";
     debounce.d.getElementById("search").dispatchEvent(new debounce.w.Event("input"));
