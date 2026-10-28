@@ -336,3 +336,18 @@ test('comparison metrics follow local edits and out-of-range evidence is rejecte
   await upload('#import-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [1], updated_at: '2026-01-01T00:00:00Z'}]});
   await expect(page.locator('#app-status')).toContainText('Imported 1 reviews');
 });
+
+test('bookmarks are scoped to the collection revision and legacy bookmarks migrate', async ({page}) => {
+  await page.goto('/');
+  await page.evaluate(id => localStorage.setItem('trajectory-bookmarks', JSON.stringify([id])), secondId);
+  await page.reload();
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await page.locator('#saved-only').check();
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await expect(page.locator('#title')).toHaveText('Alpha evaluation task');
+  await page.locator('#bookmark').click();
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  const keys = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('trajectory-bookmarks')).sort());
+  expect(keys).toEqual(['trajectory-bookmarks', 'trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303']);
+  expect(await page.evaluate(() => localStorage.getItem('trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303'))).toBe('[]');
+});

@@ -3,6 +3,11 @@ import argparse
 import json
 import re
 import time
+
+try:
+    import regex as regex_engine  # Supports per-match timeouts; standard re cannot be interrupted.
+except ImportError:  # pragma: no cover - exercised only without the optional dependency
+    regex_engine = None
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -143,11 +148,14 @@ def load_conversations(path):
         ident = f"{split}-{row_index:04d}-{source_id}"
         records[ident] = make_record(ident, source_id, row_index, split, item, normalize_label(item.get("label")),
                                      title=item.get("title"))
-    meta = {"source": f"file:{path.name}", "revision": hashlib.sha256(raw).hexdigest(), "title": title,
+    # Identity comes from the file's bytes, not its name, so renaming a file
+    # keeps its reviews and bookmarks.
+    meta = {"source": CONVERSATIONS_SOURCE, "revision": hashlib.sha256(raw).hexdigest(), "title": title,
             "source_url": None, "note": f"Loaded from {path.name}."}
     return records, meta
 
 
+CONVERSATIONS_SOURCE = "loupe.conversations.v1"
 GLOOM_META = {"source": SOURCE, "revision": REVISION, "title": "Gloom · Synthetic conversation", "source_url": SOURCE,
               "note": "Labels supplied by the dataset. Exact match to the paper’s inputs is unverified."}
 TOKEN = re.compile(r'"([^"]*)"|(\S+)')
@@ -200,15 +208,28 @@ def compile_terms(terms, use_regex):
             raise ValueError(f"Search terms are limited to {MAX_PATTERN} characters")
     if not use_regex:
         return None
+    if regex_engine is None:
+        raise ValueError("Regular expressions need the regex package: pip install regex")
     patterns = []
     for term in terms:
         if unsafe_pattern(term):
             raise ValueError("Nested unbounded repetition such as (a+)+ is not supported")
         try:
-            patterns.append(re.compile(term, re.IGNORECASE))
-        except re.error as exc:
+            patterns.append(regex_engine.compile(term, regex_engine.IGNORECASE))
+        except regex_engine.error as exc:
             raise ValueError(f"Invalid regular expression: {exc}")
     return patterns
+
+
+def timed_search(pattern, text, deadline):
+    """Search with the remaining budget as an engine-level timeout; raises ValueError when it runs out."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError(f"Search stopped after {SEARCH_BUDGET:g} seconds; simplify the pattern")
+    try:
+        return pattern.search(text, timeout=remaining)
+    except TimeoutError:
+        raise ValueError(f"Search stopped after {SEARCH_BUDGET:g} seconds; simplify the pattern")
 
 
 def parse_query(text):
@@ -248,7 +269,7 @@ def filter_records(records, query):
     deadline = time.monotonic() + SEARCH_BUDGET
     for record in records.values():
         if time.monotonic() > deadline:
-            raise ValueError("Search stopped after 2 seconds; simplify the pattern")
+            raise ValueError(f"Search stopped after {SEARCH_BUDGET:g} seconds; simplify the pattern")
         summary = record["summary"]
         if (label and str(summary["label"]) != label) or (split and summary["split"] != split) \
                 or (examples and not summary["example_note"]):
@@ -271,9 +292,9 @@ def filter_records(records, query):
         # match inside the selected messages.
         ident = "" if scoped else summary["id"].lower()
         if use_regex:
-            if not all(p.search(text) or (ident and p.search(ident)) for p in patterns):
+            if not all(timed_search(p, text, deadline) or (ident and p.search(ident)) for p in patterns):
                 continue
-            first = patterns[0].search(text)
+            first = timed_search(patterns[0], text, deadline)
         else:
             if not all(t in lower or (ident and t in ident) for t in lowered):
                 continue

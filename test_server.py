@@ -1,6 +1,7 @@
 """Server-side search grammar, snippets, and the generic conversation loader; synthetic data only."""
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -70,6 +71,20 @@ class QueryTests(unittest.TestCase):
             search(q="x" * (MAX_PATTERN + 1))
         self.assertEqual(search(q="x" * MAX_PATTERN), [])
 
+    def test_exponential_patterns_stop_at_the_budget(self):
+        import server
+        text = {"messages": [{"role": "user", "content": "a" * 60 + "b"}]}
+        slow = {"t": make_record("t", "t", 0, "train", text, 0)}
+        original = server.SEARCH_BUDGET
+        server.SEARCH_BUDGET = 0.2
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(ValueError, "Search stopped"):
+                filter_records(slow, {"q": ["(a|aa)+$"], "regex": ["1"]})
+            self.assertLess(time.monotonic() - started, 1.5)
+        finally:
+            server.SEARCH_BUDGET = original
+
     def test_regex_mode_and_errors(self):
         self.assertEqual(search(q="rm+-rf+\\w%2B", regex="1"), ["train-0000-a"])
         self.assertEqual(search(q="^Inspect", regex="1"), ["train-0000-a", "train-0001-b"])
@@ -119,9 +134,14 @@ class LoaderTests(unittest.TestCase):
             self.assertEqual(loaded["all-0000-r1"]["summary"]["label"], 1)
             self.assertIsNone(loaded["all-0001-1"]["summary"]["label"])
             self.assertEqual(loaded["all-0001-1"]["summary"]["title"], "Review the Plan carefully.")
-            self.assertEqual(meta["source"], "file:runs.jsonl")
+            self.assertEqual(meta["source"], "loupe.conversations.v1")
             self.assertEqual(len(meta["revision"]), 64)
             self.assertEqual(meta["title"], "runs")
+            renamed = path.with_name("renamed.jsonl")
+            path.rename(renamed)
+            _, renamed_meta = load_conversations(renamed)
+            self.assertEqual((renamed_meta["source"], renamed_meta["revision"]), (meta["source"], meta["revision"]))
+            self.assertEqual(renamed_meta["note"], "Loaded from renamed.jsonl.")
             wrapped = Path(directory) / "set.json"
             wrapped.write_text(json.dumps({"title": "Agent runs", "records": [{"id": "x", "split": "dev", "messages": MESSAGES}]}))
             loaded, meta = load_conversations(wrapped)

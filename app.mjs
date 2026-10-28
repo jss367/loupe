@@ -12,10 +12,20 @@ const state = {
 };
 let saved = new Set();
 try {
-  const bookmarks = JSON.parse(localStorage.getItem('trajectory-bookmarks') || '[]');
-  if (Array.isArray(bookmarks)) saved = new Set(bookmarks.filter(id => typeof id === 'string'));
   state.hideLabels = localStorage.getItem('loupe-hide-labels') === 'true';
 } catch { notify('Browser storage is unavailable. Export your reviews before leaving.', true); }
+// Bookmarks are scoped to the collection revision so row IDs shared between
+// generic files do not share bookmarks. Gloom bookmarks saved under the
+// original unscoped key are migrated on first load.
+const LEGACY_BOOKMARKS = 'trajectory-bookmarks';
+const bookmarkKey = () => 'trajectory-bookmarks:' + state.meta.revision;
+function loadBookmarks() {
+  try {
+    const stored = localStorage.getItem(bookmarkKey()) ?? (state.meta.source === 'https://huggingface.co/datasets/Syghmon/gloom_data' ? localStorage.getItem(LEGACY_BOOKMARKS) : null);
+    const bookmarks = JSON.parse(stored || '[]');
+    if (Array.isArray(bookmarks)) saved = new Set(bookmarks.filter(id => typeof id === 'string'));
+  } catch { notify('Browser storage is unavailable. Export your reviews before leaving.', true); }
+}
 
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -577,7 +587,7 @@ $('raw-tab').onclick = () => { state.raw = true; renderConversation(); };
 $('expand-tools').onclick = () => { state.expanded = !state.expanded; renderConversation(); };
 $('bookmark').onclick = () => {
   if (saved.has(state.id)) saved.delete(state.id); else saved.add(state.id);
-  try { localStorage.setItem('trajectory-bookmarks', JSON.stringify([...saved])); }
+  try { localStorage.setItem(bookmarkKey(), JSON.stringify([...saved])); }
   catch { notify('Could not save bookmarks in browser storage.', true); }
   updateBookmark();
   if ($('saved-only').checked) applyFilters(); else renderList();
@@ -654,6 +664,7 @@ document.addEventListener('keydown', event => {
     $('total').textContent = meta.total.toLocaleString();
     $('benign').textContent = meta.benign;
     $('scheming').textContent = meta.scheming;
+    loadBookmarks();
     renderDatasetInfo();
     try {
       const stored = localStorage.getItem(reviewKey());

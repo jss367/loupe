@@ -33,7 +33,7 @@ The directory must contain `gloom-train.parquet` and `gloom-test.parquet` from t
 ## Reviewing examples
 
 - Search conversation contents, including tool arguments and outputs. Match arrows jump to the text and open collapsed tool outputs. Each result shows a snippet around its first match.
-- Every search term must match. Quote a phrase (`"rm -rf"`) to match it exactly, and scope the search to messages by role (`role:tool`, `role:assistant`) or to messages that call or answer a named tool (`tool:bash`). Enable **Regular expressions** to treat each term as a case-insensitive pattern; Python matches on the server and JavaScript highlights in the browser, so highlights for unusual syntax can differ slightly. Highlights and the match counter follow the scope, so `role:tool report` marks `report` only in tool messages; Raw JSON highlights the whole document. Terms are limited to 200 characters, patterns with nested unbounded repetition such as `(a+)+` are rejected, a search stops after two seconds, and the browser only highlights queries the server accepted.
+- Every search term must match. Quote a phrase (`"rm -rf"`) to match it exactly, and scope the search to messages by role (`role:tool`, `role:assistant`) or to messages that call or answer a named tool (`tool:bash`). Enable **Regular expressions** to treat each term as a case-insensitive pattern; Python matches on the server and JavaScript highlights in the browser, so highlights for unusual syntax can differ slightly. Highlights and the match counter follow the scope, so `role:tool report` marks `report` only in tool messages; Raw JSON highlights the whole document. Terms are limited to 200 characters, patterns with nested unbounded repetition such as `(a+)+` are rejected, and a search stops after two seconds, including inside a single match, because regular-expression mode uses the `regex` package with an engine-level timeout. The browser only highlights queries the server accepted; JavaScript has no match timeout, so a pattern that is slow on one trajectory can still be slow to highlight there.
 - Filter by the dataset's labels or public release splits. **Examples from the audit** selects four starting points with brief review notes; these are selected examples, not a representative sample or confirmed label errors.
 - Use **Shuffle** to inspect other examples. Arrow keys move between results; `/` focuses search when a form control is not focused.
 - Bookmark examples for later, or copy the URL to link to the same conversation in another installation using the same release. Browsing filters, search, and sorting are kept in the URL, so a filtered queue can be reloaded or shared.
@@ -68,14 +68,16 @@ Labels are supplied by the dataset, not independent judgments. Train/test refers
 
 ## Local operation
 
-The server binds to `127.0.0.1` and exposes read-only data endpoints. The browser interface uses no external scripts or services. After downloading the dataset, browsing works offline. Bookmarks, review notebooks, and the label visibility preference are stored in this browser's local storage and are not synchronized or written into the dataset. Review import and export happen entirely in the browser.
+The server binds to `127.0.0.1` and exposes read-only data endpoints. The browser interface uses no external scripts or services. After downloading the dataset, browsing works offline. Bookmarks and review notebooks are stored in this browser's local storage, keyed by the collection release, and the label visibility preference is stored alongside them; none of it is synchronized or written into the dataset. Review import and export happen entirely in the browser.
 
 All trajectories are loaded into memory at startup. This initial implementation is intended for this small dataset; it does not yet provide streaming or indexing for large collections.
 
 ## Survey exploration
 
 Loupe also supports local survey exports with structured answers and free
-responses. Survey mode needs only Python 3.10+ and its standard library:
+responses. Survey mode needs only Python 3.10+ and its standard library; conversation
+mode needs the packages in `requirements.txt` (`regex` for regular-expression
+search, `pandas` and `pyarrow` for Gloom):
 
 ```bash
 python3 server.py --survey /absolute/path/to/survey.loupe.json --port 8788
@@ -194,9 +196,9 @@ fields are `id` (defaults to the row number), `label` (`0`, `1`, `benign`,
 `scheming`, or a boolean; omit it for unlabeled records), `title`, and
 `split` (defaults to `all`). Any other fields are kept and shown in Raw JSON.
 When no record has a label, the label controls, label statistics, and the
-agreement filters are hidden. Review notebooks for a file are tied to its
-SHA-256 digest, so re-exporting the file with different contents starts a new
-review set; export your reviews first.
+agreement filters are hidden. Reviews and bookmarks for a file are tied to its
+SHA-256 digest, not its name, so renaming the file keeps them and re-exporting
+it with different contents starts a new review set; export your reviews first.
 
 Survey annotation saves use the browser's Web Locks API to serialize writes
 across tabs, then read the latest browser notebook before applying the
