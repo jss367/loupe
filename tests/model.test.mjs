@@ -153,7 +153,7 @@ test('CSV export joins reviews with catalog rows and neutralizes formulas', () =
   assert.equal(csvCell(null), '""');
 });
 
-import {comparisonStats, unsafePattern, MAX_PATTERN} from '../model.mjs';
+import {comparisonStats, scanRanges, unsafePattern, MAX_PATTERN} from '../model.mjs';
 
 test('evidence must point at an existing message when record sizes are known', () => {
   const sizes = new Map([['a', 5], ['b', 2]]);
@@ -180,4 +180,15 @@ test('unsafe or oversized patterns are rejected from highlighting', () => {
   assert.equal(termPatterns(parseQuery('(a+)+')).length, 1);
   assert.deepEqual(termPatterns(parseQuery('x'.repeat(MAX_PATTERN + 1))), []);
   assert.equal(termPatterns(parseQuery('x'.repeat(MAX_PATTERN))).length, 1);
+});
+
+test('match scans stop at the mark limit and report truncation', () => {
+  const dot = termPatterns(parseQuery('.', {regex: true}));
+  assert.deepEqual(scanRanges('x'.repeat(50), dot, 10), {ranges: [[0, 10]], truncated: true});
+  assert.deepEqual(scanRanges('x'.repeat(50), dot, 0), {ranges: [], truncated: true});
+  assert.deepEqual(scanRanges('x'.repeat(50), dot), {ranges: [[0, 50]], truncated: false});
+  assert.equal(scanRanges('x'.repeat(5000), dot).truncated, true);
+  assert.equal(matchRanges('x\n'.repeat(3000), dot).length, 2000);
+  assert.deepEqual(scanRanges('ab ab ab', termPatterns(parseQuery('ab a')), 2), {ranges: [[0, 2], [3, 5]], truncated: true});
+  assert.deepEqual(scanRanges('ab ab ab', termPatterns(parseQuery('zz')), 2), {ranges: [], truncated: false});
 });

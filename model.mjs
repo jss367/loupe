@@ -3,6 +3,7 @@ export const VERDICTS = ['', 'benign', 'scheming', 'uncertain'];
 export const MAX_NOTES = 20000;
 export const MAX_EVIDENCE = 10000;
 export const MAX_PATTERN = 200;
+export const MAX_MARKS = 2000;
 export const REVIEW_FORMAT = 'loupe-reviews';
 const LABEL_NAMES = {0: 'benign', 1: 'scheming'};
 
@@ -213,13 +214,20 @@ export function unsafePattern(pattern) {
   return false;
 }
 
-// Sorted, merged [start, end) ranges matched by any pattern.
-export function matchRanges(text, patterns) {
+export function matchRanges(text, patterns, limit = MAX_MARKS) {
+  return scanRanges(text, patterns, limit).ranges;
+}
+
+// Sorted, merged [start, end) ranges matched by any pattern. At most `limit`
+// matches are collected, so a pattern like `.` cannot create a mark per
+// character of a large document; `truncated` reports when the limit stopped
+// the scan.
+export function scanRanges(text, patterns, limit = MAX_MARKS) {
   const ranges = [];
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
     let match;
-    while ((match = pattern.exec(text)) !== null) {
+    while (ranges.length < limit && (match = pattern.exec(text)) !== null) {
       if (!match[0].length) { pattern.lastIndex++; continue; }
       ranges.push([match.index, match.index + match[0].length]);
     }
@@ -231,7 +239,7 @@ export function matchRanges(text, patterns) {
     if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
     else merged.push([range[0], range[1]]);
   }
-  return merged;
+  return {ranges: merged.slice(0, limit), truncated: ranges.length >= limit};
 }
 
 // Spreadsheet-safe CSV: quote everything and neutralize formula prefixes.

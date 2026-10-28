@@ -1,6 +1,6 @@
 import {
-  compareNotebook, comparisonStats, filterAndSort, labelAgreement, makeNotebook, matchRanges, matchesRole,
-  mergeNotebook, normalizeEvidence, parseQuery, reviewsCsv, termPatterns,
+  MAX_MARKS, compareNotebook, comparisonStats, filterAndSort, labelAgreement, makeNotebook, matchesRole,
+  mergeNotebook, normalizeEvidence, parseQuery, reviewsCsv, scanRanges, termPatterns,
 } from './model.mjs';
 
 const $ = id => document.getElementById(id);
@@ -10,6 +10,7 @@ const state = {
   detailRequest: 0, match: -1, marks: [], reviews: Object.create(null), hideLabels: false,
   patterns: [], scope: {roles: [], tools: [], regex: false}, query: null, comparison: null, comparisonName: '', fileMode: 'import',
   segments: new Map(), segmentId: 0, jobs: new Map(), jobToken: 0, worker: null, watchdog: null,
+  markBudget: MAX_MARKS, truncated: false,
 };
 const HIGHLIGHT_BUDGET = 2000;
 let saved = new Set();
@@ -83,12 +84,18 @@ function sliceRanges(ranges, from, to) {
 // Literal terms are marked synchronously: matching is linear. Regular
 // expressions are matched in a worker with a time limit (flushHighlights), so
 // a pattern that is slow on this text cannot freeze the tab. Until the worker
-// answers, the text renders without marks.
+// answers, the text renders without marks. Each view marks at most MAX_MARKS
+// ranges so a broad term cannot flood the page with elements.
 function marked(text, mode, patterns = state.patterns) {
   const source = String(text ?? '');
   const render = ranges => mode === 'rich' ? rich(source, ranges) : highlight(source, ranges);
   if (!patterns.length) return render([]);
-  if (!state.scope.regex) return render(matchRanges(source, patterns));
+  if (!state.scope.regex) {
+    const scan = state.markBudget > 0 ? scanRanges(source, patterns, state.markBudget) : {ranges: [], truncated: true};
+    state.markBudget -= scan.ranges.length;
+    if (scan.truncated) state.truncated = true;
+    return render(scan.ranges);
+  }
   const id = ++state.segmentId;
   state.segments.set(id, {text: source, mode});
   return '<span data-hl="' + id + '">' + render([]) + '</span>';
@@ -103,7 +110,7 @@ function flushHighlights() {
     state.worker = new Worker('/highlight.mjs', {type: 'module'});
     state.worker.onmessage = onHighlighted;
   }
-  state.worker.postMessage({token, query: state.query, segments});
+  state.worker.postMessage({token, query: state.query, segments, limit: state.markBudget});
   if (!state.watchdog) state.watchdog = setTimeout(stopHighlighting, HIGHLIGHT_BUDGET);
   $('match-count').textContent = 'Highlighting…';
 }
@@ -113,6 +120,7 @@ function onHighlighted({data}) {
   clearTimeout(state.watchdog);
   state.watchdog = state.jobs.size ? setTimeout(stopHighlighting, HIGHLIGHT_BUDGET) : null;
   if (!pending) return;
+  if (data.truncated) state.truncated = true;
   for (const [id, ranges] of data.results) {
     const node = document.querySelector('[data-hl="' + id + '"]'), segment = pending.get(id);
     if (!node || !segment || !ranges.length) continue;
@@ -132,7 +140,8 @@ function collectMarks() {
   state.marks = [...$('conversation').querySelectorAll('mark')];
   state.match = -1;
   $('match-controls').classList.toggle('hidden', !state.patterns.length);
-  $('match-count').textContent = state.jobs.size ? 'Highlighting…' : state.marks.length + ' matches';
+  $('match-count').textContent = state.jobs.size ? 'Highlighting…'
+    : state.truncated ? 'First ' + state.marks.length.toLocaleString() + ' matches shown' : state.marks.length + ' matches';
   $('prev-match').disabled = $('next-match').disabled = !state.marks.length;
 }
 function inline(line) {
@@ -255,6 +264,7 @@ async function applyFilters({autoSelect = true} = {}) {
 }
 function renderList() {
   const list = $('records');
+  state.markBudget = MAX_MARKS;
   list.replaceChildren();
   $('result-count').textContent = state.records.length.toLocaleString() + (state.records.length === 1 ? ' conversation' : ' conversations');
   const pages = Math.max(1, Math.ceil(state.records.length / state.pageSize));
@@ -343,6 +353,8 @@ function outlineLabel(index, name, preview, evidence) {
 }
 function renderConversation() {
   if (!state.record) return;
+  state.markBudget = MAX_MARKS;
+  state.truncated = false;
   const container = $('conversation');
   container.replaceChildren();
   const inner = document.createElement('div');
@@ -379,7 +391,11 @@ function renderConversation() {
       node.classList.toggle('evidence', evidence.has(index));
       node.id = 'message-' + index;
       node.tabIndex = -1;
-      const name = role === 'tool' ? (tools.get(message.tool_call_id) || message.name || 'Tool output') : role === 'user' ? 'User request' : role;
+      // Tool headings show the linked call's name and the message's own name
+      // when both exist, since both are searchable.
+      const own = role === 'tool' && message.name ? String(message.name) : '';
+      const linked = role === 'tool' ? tools.get(message.tool_call_id) || '' : '';
+      const name = role === 'tool' ? (linked && own && linked !== own ? linked + ' · ' + own : linked || own || 'Tool output') : role === 'user' ? 'User request' : role;
       // Tool names are searchable text, so a tool heading can carry a match.
       node.innerHTML = '<div class="message-head"><span class="role">' + (role === 'tool' ? marked(name, 'plain') : esc(name)) + '</span><span class="message-head-right">' +
         '<button class="evidence-toggle" aria-pressed="' + evidence.has(index) + '" title="Mark this message as evidence for your review">' + (evidence.has(index) ? '⚑ Evidence' : '⚐ Evidence') + '</button>' +

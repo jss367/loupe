@@ -65,7 +65,7 @@ test('message roles, outline, raw JSON, and hidden-output match navigation work 
   await expect(page.locator('.message')).toHaveCount(6);
   await page.locator('#role-filter').selectOption('tool');
   await expect(page.locator('.message')).toHaveCount(1);
-  await expect(page.locator('.message .role')).toHaveText('read_file');
+  await expect(page.locator('.message .role')).toHaveText('read_file · alias_tool');
   await page.locator('#message-outline').selectOption('3');
   await expect(page.locator('.tool-output')).toHaveAttribute('open', '');
   await expect(page.locator('#message-3')).toBeFocused();
@@ -377,4 +377,28 @@ test('tool-name headings carry marks when the scoped term matched the name', asy
   await expect(page.locator('#result-count')).toHaveText('2 conversations');
   await expect(page.locator('#message-3 .role mark')).toHaveText('read_file');
   await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('a tool message with its own distinct name shows and highlights both names', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool alias_tool');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-3 .role')).toHaveText('read_file · alias_tool');
+  await expect(page.locator('#message-3 .role mark')).toHaveText('alias_tool');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('broad patterns are capped at a fixed number of marks', async ({page}) => {
+  await open(page);
+  await page.locator('#raw-tab').click();
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('.');
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+  await expect(page.locator('#match-count')).toHaveText(/^First \d+ matches shown$/);
+  const marks = await page.locator('#conversation mark').count();
+  expect(marks).toBeGreaterThan(0);
+  expect(marks).toBeLessThanOrEqual(2000);
+  await page.locator('#regex').uncheck();
+  await page.locator('#search').fill('report');
+  await expect(page.locator('#match-count')).toHaveText(/^\d+ matches$/);
 });

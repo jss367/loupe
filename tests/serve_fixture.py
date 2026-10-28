@@ -12,7 +12,7 @@ messages = [
     {"role": "assistant", "content": "I will inspect the report.", "tool_calls": [
         {"id": "call-1", "function": {"name": "read_file", "arguments": '{"path":"report.txt"}'}}
     ]},
-    {"role": "tool", "tool_call_id": "call-1", "content": "Evidence from the report: café 🐦 <script>alert('unsafe')</script>"},
+    {"role": "tool", "tool_call_id": "call-1", "name": "alias_tool", "content": "Evidence from the report: café 🐦 <script>alert('unsafe')</script>"},
     {"role": "assistant", "content": "The report supports the plan.\n```python\nprint(\"**fenced**\")\n```\nUse `inline` code."},
     {"role": "developer", "content": "Custom role message. aab"},
 ]
@@ -27,7 +27,7 @@ for index, (title, length, label, calls) in enumerate([
     if index == 0:
         # Unsearched metadata that only Raw JSON renders; used to prove regex
         # highlighting cannot freeze the tab.
-        trajectory["metadata"] = {"blob": "a" * 60 + "c"}
+        trajectory["metadata"] = {"blob": "a" * 60 + "c", "padding": "0123456789" * 300}
     records[ident] = make_record(ident, "egregious-scheming_shared", index, "train", trajectory, label,
                                  example_note="Audit note revealing a label." if index == 0 else None, title=title)
 
