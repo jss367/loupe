@@ -412,9 +412,11 @@ function renderConversation() {
       const base = role === 'tool' ? linked || own || 'Tool output' : role === 'user' ? 'User request' : role;
       const name = own && own !== base ? base + ' · ' + own : base;
       // Tool names are searchable text, so a tool heading can carry a match.
-      // The base is highlighted when it is itself indexed text: a tool name,
-      // or an own name that equals the role. A bare role never gets marks.
-      const baseHtml = role === 'tool' || own === base ? marked(base, 'plain') : esc(base);
+      // The base is highlighted only when it is itself indexed text: a linked
+      // or own tool name, or an own name that equals the role. A bare role
+      // and the synthetic "Tool output" label never get marks.
+      const indexedBase = role === 'tool' ? Boolean(linked || own) : own === base;
+      const baseHtml = indexedBase ? marked(base, 'plain') : esc(base);
       const heading = own && own !== base ? baseHtml + ' · ' + marked(own, 'plain') : baseHtml;
       node.innerHTML = '<div class="message-head"><span class="role">' + heading + '</span><span class="message-head-right">' +
         '<button class="evidence-toggle" aria-pressed="' + evidence.has(index) + '" title="Mark this message as evidence for your review">' + (evidence.has(index) ? '⚑ Evidence' : '⚐ Evidence') + '</button>' +

@@ -53,6 +53,19 @@ class QueryTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in filter_records(named, parse_qs("q=tool%3Abash+denied"))], ["all-0000-n"])
         self.assertEqual(filter_records(named, parse_qs("q=tool%3Apython+denied")), [])
 
+    def test_only_rendered_tool_call_fields_are_indexed(self):
+        messages = [{"role": "assistant", "content": "go", "tool_calls": [
+            {"id": "call_secret_7", "type": "function", "function": {"name": "Bash", "arguments": '{"cmd":"ls"}'}},
+            {"id": "call_8", "name": "lookup", "args": {"key": "needle"}}]}]
+        calls = {"all-0000-c": make_record("all-0000-c", "c", 0, "all", {"messages": messages}, None)}
+        found = lambda q: [r["id"] for r in filter_records(calls, {"q": [q]})]
+        self.assertEqual(found("bash"), ["all-0000-c"])
+        self.assertEqual(found('"cmd"'), ["all-0000-c"])
+        self.assertEqual(found("lookup"), ["all-0000-c"])
+        self.assertEqual(found("needle"), ["all-0000-c"])
+        self.assertEqual(found("call_secret_7"), [])
+        self.assertEqual(found("function"), [])
+
     def test_scoped_terms_ignore_trajectory_ids(self):
         self.assertEqual(search(q="train-0001"), ["train-0001-b"])
         self.assertEqual(search(q="role%3Auser+train-0001"), [])
@@ -99,8 +112,8 @@ class QueryTests(unittest.TestCase):
         results = filter_records(records(), parse_qs("q=carefully"))
         snippet = results[0]["snippet"]
         self.assertTrue(snippet.startswith("Inspect the evidence. Review the Plan carefully."))
-        self.assertTrue(snippet.endswith("…"))
         self.assertNotIn("\n", snippet)
+        self.assertNotIn("tool_call_id", snippet)
         long_text = {"messages": [{"role": "user", "content": "x" * 500 + " needle " + "y" * 500}]}
         long_records = {"t": make_record("t", "t", 0, "train", long_text, 0)}
         snippet = filter_records(long_records, parse_qs("q=NEEDLE"))[0]["snippet"]

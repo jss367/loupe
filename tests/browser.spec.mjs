@@ -513,3 +513,19 @@ test('named non-tool messages show and highlight their name', async ({page}) => 
   await expect(page.locator('#message-4 .role mark')).toHaveCount(0);
   await expect(page.locator('#match-count')).toHaveText('1 matches');
 });
+
+test('the synthetic Tool output heading is never marked', async ({page}) => {
+  const id = 'train-0000-egregious-scheming_shared';
+  const summary = {id, source_id: 'egregious-scheming_shared', row_index: 0, title: 'Synthetic tool', preview: '', label: 1,
+    split: 'train', message_count: 2, tool_call_count: 0, example_note: null, snippet: 'raw output text'};
+  const trajectory = {messages: [{role: 'user', content: 'Run it.'}, {role: 'tool', content: 'raw output text'}]};
+  await page.route('**/api/records?*', route => route.fulfill({json: {records: [summary], total: 1}}));
+  await page.route('**/api/records/' + id, route => route.fulfill({json: {...summary, trajectory}}));
+  await page.goto('/');
+  await expect(page.locator('#title')).toHaveText('Synthetic tool');
+  await expect(page.locator('#message-1 .role')).toHaveText('Tool output');
+  await page.locator('#search').fill('role:tool output');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-1 .role mark')).toHaveCount(0);
+  await expect(page.locator('#message-1 .content mark')).toHaveText('output');
+});

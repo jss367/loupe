@@ -48,10 +48,24 @@ def normalize_label(value):
     raise ValueError(f"Unsupported label {value!r}; use 0, 1, benign, or scheming")
 
 
+def call_name(call):
+    return call.get("name") or (call.get("function") or {}).get("name")
+
+
+def call_arguments(call):
+    if "args" in call:
+        return call["args"]
+    return (call.get("function") or {}).get("arguments", {})
+
+
 def message_text(message, tool_names):
-    """Searchable text for one message: content, tool calls, and the tool name."""
+    """Searchable text for one message: content, each tool call's name and
+    arguments, and the message's own and linked tool names. Only fields the
+    interface renders are indexed, so every match is visible in the view."""
     pieces = [content_text(message.get("content", ""))]
-    pieces.extend(json.dumps(call, ensure_ascii=False) for call in message.get("tool_calls") or [])
+    for call in message.get("tool_calls") or []:
+        pieces.append(str(call_name(call) or "Tool call"))
+        pieces.append(content_text(call_arguments(call)))
     if message.get("name"):
         pieces.append(str(message["name"]))
     if message.get("tool_call_id") in tool_names:
@@ -70,14 +84,13 @@ def make_record(ident, source_id, row_index, split, trajectory, label, example_n
     tool_names = {}
     for message in messages:
         for call in message.get("tool_calls") or []:
-            name = call.get("name") or (call.get("function") or {}).get("name")
+            name = call_name(call)
             if name and call.get("id") is not None:
                 tool_names[call["id"]] = str(name)
     parts = []
     for message in messages:
         text = message_text(message, tool_names)
-        tools = {str(call.get("name") or (call.get("function") or {}).get("name") or "").lower()
-                 for call in message.get("tool_calls") or []}
+        tools = {str(call_name(call) or "").lower() for call in message.get("tool_calls") or []}
         if message.get("tool_call_id") in tool_names:
             tools.add(tool_names[message["tool_call_id"]].lower())
         if message.get("role") == "tool" and message.get("name"):
