@@ -76,7 +76,10 @@ views, numeric and categorical conditions, completion and retained-set filters,
 bookmarks, tags, notes, saved subsets, response links, and matching-response
 CSV downloads. Counts separate subset rows, free-response authors, matching
 authors, and matching responses. All structured conditions are combined with
-AND. Numeric conditions use finite original numeric entries without repairing
+AND. Use the free-response question picker to select multiple questions;
+responses to any selected question are included. Clear the selection with
+**All free-response questions**. Saved subsets retain the question selection.
+Numeric conditions use finite original numeric entries without repairing
 them; missing answers do not pass. Dataset descriptions should explain the
 meaning of retained rows and any cleaning or sampling limitations.
 

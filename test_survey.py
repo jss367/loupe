@@ -69,6 +69,20 @@ class SurveyTests(unittest.TestCase):
         record = Survey(data).query({"q": ["STRASSE"]})["records"][0]
         self.assertEqual(record["matches"], [[3, 9]])
 
+    def test_multiple_questions_include_either_answer_and_count_unique_authors(self):
+        result = self.survey.query({"question": ["comments", "why", "comments"]})
+        self.assertEqual(len(result["records"]), 3)
+        self.assertEqual(result["text_respondents"], 2)
+        self.assertEqual(result["matched_respondents"], 2)
+        result = self.survey.query({"question": ["comments", "why"], "q": ["interpretation"]})
+        self.assertEqual(len(result["records"]), 2)
+        self.assertEqual(result["matched_respondents"], 2)
+        self.assertEqual(self.survey.query({"question": [""]}), self.query())
+        for questions in (["why", "risk"], ["why", "unknown"]):
+            for validate_only in (False, True):
+                with self.subTest(questions=questions, validate_only=validate_only), self.assertRaises(ValueError):
+                    self.survey.query({"question": questions}, validate_only=validate_only)
+
     def test_multiple_structured_conditions(self):
         filters = [{"question": "risk", "op": "gte", "value": "10"},
                    {"question": "pace", "op": "eq", "value": "Slower"}]
@@ -229,6 +243,15 @@ class ServerTests(unittest.TestCase):
             with self.subTest(headers=headers), self.assertRaises(HTTPError) as raised:
                 urlopen(Request(self.url + "/api/survey/meta", headers=headers))
             self.assertEqual(raised.exception.code, 403)
+
+    def test_repeated_question_parameters_filter_responses_and_validate(self):
+        params = urlencode({"question": ["why", "comments"], "q": "interpretation"}, doseq=True)
+        with urlopen(self.url + "/api/survey/responses?" + params) as r:
+            result = json.load(r)
+            self.assertEqual({row["question_id"] for row in result["records"]}, {"why", "comments"})
+            self.assertEqual(len(result["records"]), 2)
+        with urlopen(self.url + "/api/survey/validate?" + params) as r:
+            self.assertEqual(json.load(r), {"valid": True})
 
     def test_default_http_port_accepts_portless_loopback_authorities(self):
         # Advertise port 80 without requiring a privileged or unoccupied socket.
