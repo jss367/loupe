@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from server import filter_records, load_conversations, make_record, normalize_label, parse_query
+from server import MAX_PATTERN, filter_records, load_conversations, make_record, normalize_label, parse_query, unsafe_pattern
 
 MESSAGES = [
     {"role": "system", "content": "Inspect the evidence."},
@@ -45,6 +45,30 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(search(q="tool:bash+rm"), ["train-0000-a"])
         self.assertEqual(search(q="tool:bash+removed"), ["train-0000-a"])
         self.assertEqual(search(q="tool:python"), [])
+
+    def test_named_tool_outputs_join_tool_scopes(self):
+        messages = [{"role": "user", "content": "run it"}, {"role": "tool", "name": "Bash", "content": "permission denied"}]
+        named = {"all-0000-n": make_record("all-0000-n", "n", 0, "all", {"messages": messages}, None)}
+        self.assertEqual([r["id"] for r in filter_records(named, parse_qs("q=tool%3Abash+denied"))], ["all-0000-n"])
+        self.assertEqual(filter_records(named, parse_qs("q=tool%3Apython+denied")), [])
+
+    def test_scoped_terms_ignore_trajectory_ids(self):
+        self.assertEqual(search(q="train-0001"), ["train-0001-b"])
+        self.assertEqual(search(q="role%3Auser+train-0001"), [])
+        self.assertEqual(search(q="role%3Auser+0001", regex="1"), [])
+
+    def test_unsafe_and_oversized_patterns_are_rejected(self):
+        for unsafe in ["(a+)+", "(a*)*b", "(?:\\w+)*", "(a{1,})+", "((a)+)+"]:
+            self.assertTrue(unsafe_pattern(unsafe), unsafe)
+            with self.assertRaises(ValueError):
+                filter_records(records(), {"q": [unsafe], "regex": ["1"]})
+        for safe in ["(a|b)+", "a+b*", "(ab)+", "[(]+", "(a{2,5})+", "rm\\s-rf"]:
+            self.assertFalse(unsafe_pattern(safe), safe)
+            filter_records(records(), {"q": [safe], "regex": ["1"]})
+        self.assertEqual(filter_records(records(), {"q": ["(a+)+"]}), [])
+        with self.assertRaises(ValueError):
+            search(q="x" * (MAX_PATTERN + 1))
+        self.assertEqual(search(q="x" * MAX_PATTERN), [])
 
     def test_regex_mode_and_errors(self):
         self.assertEqual(search(q="rm+-rf+\\w%2B", regex="1"), ["train-0000-a"])

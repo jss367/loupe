@@ -2,6 +2,7 @@
 export const VERDICTS = ['', 'benign', 'scheming', 'uncertain'];
 export const MAX_NOTES = 20000;
 export const MAX_EVIDENCE = 10000;
+export const MAX_PATTERN = 200;
 export const REVIEW_FORMAT = 'loupe-reviews';
 const LABEL_NAMES = {0: 'benign', 1: 'scheming'};
 
@@ -57,14 +58,20 @@ export function normalizeEvidence(evidence) {
   return [...new Set(evidence || [])].sort((a, b) => a - b);
 }
 
-function validEvidence(evidence) {
+function validEvidence(evidence, messageCount) {
   return evidence === undefined || (Array.isArray(evidence) && evidence.length <= MAX_EVIDENCE &&
-    evidence.every(index => Number.isInteger(index) && index >= 0));
+    evidence.every(index => Number.isInteger(index) && index >= 0 && (messageCount === undefined || index < messageCount)));
+}
+
+// Known records are a Set of IDs or a Map of ID to message count. With a Map,
+// evidence must point at a message that exists in that trajectory.
+function knownRecords(known) {
+  return known instanceof Map ? known : new Map([...known].map(id => [id, undefined]));
 }
 
 // Validate the entire file before touching storage. Returns normalized entries
 // in file order; throws on the first structural problem.
-export function validateNotebook(notebook, meta) {
+export function validateNotebook(notebook, meta, known = null) {
   if (!notebook || notebook.format !== REVIEW_FORMAT || notebook.version !== 1 || !Array.isArray(notebook.reviews)) {
     throw Error('Choose a Loupe review notebook (version 1).');
   }
@@ -79,6 +86,9 @@ export function validateNotebook(notebook, meta) {
         typeof entry.updated_at !== 'string' || !Number.isFinite(Date.parse(entry.updated_at))) {
       throw Error('The notebook contains an invalid or duplicate review. No reviews were imported.');
     }
+    if (known?.has(entry.id) && !validEvidence(entry.evidence, known.get(entry.id))) {
+      throw Error('The notebook marks evidence on a message that does not exist in ' + entry.id + '. No reviews were imported.');
+    }
     seen.add(entry.id);
     entries.push({id: entry.id, verdict: entry.verdict, notes: entry.notes, evidence: normalizeEvidence(entry.evidence), updated_at: entry.updated_at});
   }
@@ -87,12 +97,13 @@ export function validateNotebook(notebook, meta) {
 
 // Merge newer edits, keeping local entries when timestamps tie. IDs include
 // split and row, not just source ID.
-export function mergeNotebook(notebook, local, meta, knownIds) {
-  const entries = validateNotebook(notebook, meta);
+export function mergeNotebook(notebook, local, meta, known) {
+  const records = knownRecords(known);
+  const entries = validateNotebook(notebook, meta, records);
   const merged = Object.assign(Object.create(null), local);
   let imported = 0, kept = 0, skipped = 0;
   for (const entry of entries) {
-    if (!knownIds.has(entry.id)) { skipped++; continue; }
+    if (!records.has(entry.id)) { skipped++; continue; }
     if (local[entry.id] && Date.parse(local[entry.id].updated_at) >= Date.parse(entry.updated_at)) {
       kept++;
       continue;
@@ -103,14 +114,20 @@ export function mergeNotebook(notebook, local, meta, knownIds) {
   return {reviews: merged, imported, kept, skipped};
 }
 
-// Compare another reviewer's notebook with local reviews without merging.
-// Agreement and Cohen's kappa use records both reviewers judged.
-export function compareNotebook(notebook, local, meta, knownIds) {
+// Load another reviewer's notebook for comparison without merging it.
+export function compareNotebook(notebook, local, meta, known) {
+  const records = knownRecords(known);
   const other = Object.create(null);
   let skipped = 0;
-  for (const entry of validateNotebook(notebook, meta)) {
-    if (knownIds.has(entry.id)) other[entry.id] = entry; else skipped++;
+  for (const entry of validateNotebook(notebook, meta, records)) {
+    if (records.has(entry.id)) other[entry.id] = entry; else skipped++;
   }
+  return {other, count: Object.keys(other).length, skipped, ...comparisonStats(local, other)};
+}
+
+// Agreement and Cohen's kappa over records both reviewers judged. Recomputed
+// from the current local reviews so the summary follows later edits.
+export function comparisonStats(local, other) {
   const localCounts = {}, otherCounts = {}, disagreements = [];
   let both = 0, agree = 0;
   for (const id of Object.keys(local)) {
@@ -127,7 +144,7 @@ export function compareNotebook(notebook, local, meta, knownIds) {
     const expected = Object.keys(localCounts).reduce((sum, verdict) => sum + (localCounts[verdict] / both) * ((otherCounts[verdict] || 0) / both), 0);
     kappa = expected === 1 ? (observed === 1 ? 1 : 0) : (observed - expected) / (1 - expected);
   }
-  return {other, count: Object.keys(other).length, both, agree, disagreements, kappa, skipped};
+  return {both, agree, disagreements, kappa};
 }
 
 export function matchesRole(message, role) {
@@ -154,12 +171,46 @@ export function parseQuery(input, {regex = false} = {}) {
   return {terms, roles, tools, regex};
 }
 
-// Case-insensitive highlight patterns; invalid regular expressions are skipped
-// here because the server already reports them.
+// Case-insensitive highlight patterns. Terms longer than the server accepts
+// and invalid or unsafe regular expressions are skipped; the server reports
+// them, and the interface only highlights queries the server accepted.
 export function termPatterns({terms = [], regex = false} = {}) {
   return terms.flatMap(term => {
+    if (term.length > MAX_PATTERN || (regex && unsafePattern(term))) return [];
     try { return [new RegExp(regex ? term : term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')]; } catch { return []; }
   });
+}
+
+// Reject nested unbounded repetition such as (a+)+ or (\w*)*, the usual
+// cause of catastrophic backtracking. Mirrors unsafe_pattern in server.py.
+export function unsafePattern(pattern) {
+  let depth = 0, quantified = [0], escaped = false, inClass = false, lastGroupQuantifiers = null;
+  const unbounded = (text, i) => {
+    const c = text[i];
+    if (c === '*' || c === '+') return 1;
+    if (c === '{') {
+      const brace = text.slice(i).match(/^\{(\d*),(\d*)\}/);
+      if (brace && brace[2] === '') return brace[0].length;
+    }
+    return 0;
+  };
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (inClass) { if (c === ']') inClass = false; continue; }
+    if (c === '[') { inClass = true; continue; }
+    if (c === '(') { depth++; quantified[depth] = 0; continue; }
+    if (c === ')') { lastGroupQuantifiers = quantified[depth]; depth = Math.max(0, depth - 1); continue; }
+    const width = unbounded(pattern, i);
+    if (width) {
+      const previousGroup = pattern[i - 1] === ')' ? lastGroupQuantifiers : 0;
+      if (previousGroup) return true;
+      quantified[depth]++;
+      i += width - 1;
+    }
+  }
+  return false;
 }
 
 // Sorted, merged [start, end) ranges matched by any pattern.

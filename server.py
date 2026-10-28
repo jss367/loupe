@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -74,6 +75,8 @@ def make_record(ident, source_id, row_index, split, trajectory, label, example_n
                  for call in message.get("tool_calls") or []}
         if message.get("tool_call_id") in tool_names:
             tools.add(tool_names[message["tool_call_id"]].lower())
+        if message.get("role") == "tool" and message.get("name"):
+            tools.add(str(message["name"]).lower())
         tools.discard("")
         parts.append({"role": str(message.get("role", "")).lower(), "tools": tools, "text": text, "lower": text.lower()})
     text = "\n".join(part["text"] for part in parts)
@@ -148,6 +151,64 @@ def load_conversations(path):
 GLOOM_META = {"source": SOURCE, "revision": REVISION, "title": "Gloom · Synthetic conversation", "source_url": SOURCE,
               "note": "Labels supplied by the dataset. Exact match to the paper’s inputs is unverified."}
 TOKEN = re.compile(r'"([^"]*)"|(\S+)')
+MAX_PATTERN = 200
+SEARCH_BUDGET = 2.0
+UNBOUNDED_BRACE = re.compile(r"\{(\d*),(\d*)\}")
+
+
+def unsafe_pattern(pattern):
+    """True for nested unbounded repetition such as (a+)+ or (\\w*)*; mirrors unsafePattern in model.mjs."""
+    depth, quantified, escaped, in_class, last_group = 0, [0], False, False, None
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if escaped:
+            escaped = False
+        elif c == "\\":
+            escaped = True
+        elif in_class:
+            in_class = c != "]"
+        elif c == "[":
+            in_class = True
+        elif c == "(":
+            depth += 1
+            quantified[depth:] = [0]
+        elif c == ")":
+            last_group = quantified[depth]
+            depth = max(0, depth - 1)
+        else:
+            width = 0
+            if c in "*+":
+                width = 1
+            elif c == "{":
+                brace = UNBOUNDED_BRACE.match(pattern, i)
+                if brace and brace.group(2) == "":
+                    width = brace.end() - i
+            if width:
+                if i and pattern[i - 1] == ")" and last_group:
+                    return True
+                quantified[depth] += 1
+                i += width
+                continue
+        i += 1
+    return False
+
+
+def compile_terms(terms, use_regex):
+    for term in terms:
+        if len(term) > MAX_PATTERN:
+            raise ValueError(f"Search terms are limited to {MAX_PATTERN} characters")
+    if not use_regex:
+        return None
+    patterns = []
+    for term in terms:
+        if unsafe_pattern(term):
+            raise ValueError("Nested unbounded repetition such as (a+)+ is not supported")
+        try:
+            patterns.append(re.compile(term, re.IGNORECASE))
+        except re.error as exc:
+            raise ValueError(f"Invalid regular expression: {exc}")
+    return patterns
 
 
 def parse_query(text):
@@ -180,15 +241,14 @@ def filter_records(records, query):
     label = query.get("label", [""])[0]
     split = query.get("split", [""])[0]
     examples = query.get("examples", [""])[0] == "1"
-    if use_regex:
-        try:
-            patterns = [re.compile(term, re.IGNORECASE) for term in terms]
-        except re.error as exc:
-            raise ValueError(f"Invalid regular expression: {exc}")
+    patterns = compile_terms(terms, use_regex)
     lowered = [term.lower() for term in terms]
     scoped = bool(roles or tools)
     results = []
+    deadline = time.monotonic() + SEARCH_BUDGET
     for record in records.values():
+        if time.monotonic() > deadline:
+            raise ValueError("Search stopped after 2 seconds; simplify the pattern")
         summary = record["summary"]
         if (label and str(summary["label"]) != label) or (split and summary["split"] != split) \
                 or (examples and not summary["example_note"]):
@@ -207,13 +267,15 @@ def filter_records(records, query):
             text, lower = "\n".join(m["text"] for m in parts), "\n".join(m["lower"] for m in parts)
         else:
             text, lower = record["text"], record["lower"]
-        ident = summary["id"].lower()
+        # Trajectory IDs only count toward unscoped searches; scoped terms must
+        # match inside the selected messages.
+        ident = "" if scoped else summary["id"].lower()
         if use_regex:
-            if not all(p.search(text) or p.search(ident) for p in patterns):
+            if not all(p.search(text) or (ident and p.search(ident)) for p in patterns):
                 continue
             first = patterns[0].search(text)
         else:
-            if not all(t in lower or t in ident for t in lowered):
+            if not all(t in lower or (ident and t in ident) for t in lowered):
                 continue
             first = re.search(re.escape(terms[0]), text, re.IGNORECASE)
         results.append({**summary, "snippet": snippet(text, first)})

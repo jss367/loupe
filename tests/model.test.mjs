@@ -152,3 +152,32 @@ test('CSV export joins reviews with catalog rows and neutralizes formulas', () =
   assert.equal(csvCell('-1'), '"\'-1"');
   assert.equal(csvCell(null), '""');
 });
+
+import {comparisonStats, unsafePattern, MAX_PATTERN} from '../model.mjs';
+
+test('evidence must point at an existing message when record sizes are known', () => {
+  const sizes = new Map([['a', 5], ['b', 2]]);
+  const good = makeNotebook({a: {...entry('a'), evidence: [0, 4]}, z: {...entry('z'), evidence: [999]}}, meta);
+  const merged = mergeNotebook(good, {}, meta, sizes);
+  assert.deepEqual(merged.reviews.a.evidence, [0, 4]);
+  assert.equal(merged.skipped, 1);
+  const bad = makeNotebook({a: {...entry('a'), evidence: [5]}}, meta);
+  assert.throws(() => mergeNotebook(bad, {}, meta, sizes), /does not exist in a/);
+  assert.throws(() => compareNotebook(bad, {}, meta, sizes), /does not exist in a/);
+  assert.equal(mergeNotebook(bad, {}, meta, new Set(['a'])).imported, 1);
+});
+test('comparison statistics follow later local edits', () => {
+  const other = {a: entry('a', 'benign'), b: entry('b', 'benign')};
+  const before = comparisonStats({a: entry('a', 'scheming'), b: entry('b', 'benign')}, other);
+  assert.deepEqual([before.both, before.agree, before.disagreements], [2, 1, ['a']]);
+  const after = comparisonStats({a: entry('a', 'benign'), b: entry('b', 'benign')}, other);
+  assert.deepEqual([after.both, after.agree, after.disagreements, after.kappa], [2, 2, [], 1]);
+});
+test('unsafe or oversized patterns are rejected from highlighting', () => {
+  for (const unsafe of ['(a+)+', '(a*)*b', '(?:\\w+)*', '(a{1,})+', '((a)+)+', '(a+)+?']) assert.equal(unsafePattern(unsafe), true, unsafe);
+  for (const safe of ['(a|b)+', 'a+b*', '(ab)+', '\\(a+\\)+', '[(]+', '(a{2,5})+', '(x+)y*', 'rm\\s-rf']) assert.equal(unsafePattern(safe), false, safe);
+  assert.deepEqual(termPatterns(parseQuery('(a+)+', {regex: true})), []);
+  assert.equal(termPatterns(parseQuery('(a+)+')).length, 1);
+  assert.deepEqual(termPatterns(parseQuery('x'.repeat(MAX_PATTERN + 1))), []);
+  assert.equal(termPatterns(parseQuery('x'.repeat(MAX_PATTERN))).length, 1);
+});

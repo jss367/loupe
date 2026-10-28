@@ -288,3 +288,51 @@ test('fenced and inline code render as code elements', async ({page}) => {
   await page.locator('#search').fill('fenced');
   await expect(page.locator('#message-4 pre.code mark')).toHaveText('fenced');
 });
+
+test('highlights follow the search scope and unsafe patterns never reach the browser', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool report');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('.message.tool mark')).toHaveCount(1);
+  await expect(page.locator('.message.assistant mark')).toHaveCount(0);
+  await page.locator('#search').fill('tool:read_file report');
+  await expect(page.locator('#match-count')).toHaveText('3 matches');
+  await expect(page.locator('#message-2 mark')).toHaveCount(2);
+  await expect(page.locator('#message-4 mark')).toHaveCount(0);
+  await page.locator('#search').fill('role:user train-0001');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a+)+');
+  await expect(page.locator('#result-count')).toContainText('Nested unbounded repetition');
+  await expect(page.locator('#match-controls')).toBeHidden();
+  await expect(page.locator('mark')).toHaveCount(0);
+  await page.locator('#search').fill('x'.repeat(201));
+  await expect(page.locator('#result-count')).toContainText('limited to 200 characters');
+});
+
+test('comparison metrics follow local edits and out-of-range evidence is rejected', async ({page}) => {
+  await open(page);
+  await review(page, 'scheming', 'Mine');
+  const base = {
+    format: 'loupe-reviews', version: 1, source: 'https://huggingface.co/datasets/Syghmon/gloom_data',
+    revision: '0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303',
+  };
+  const upload = async (button, value) => {
+    const chooser = page.waitForEvent('filechooser');
+    await page.locator(button).click();
+    await (await chooser).setFiles({name: 'theirs.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(value))});
+  };
+  await upload('#compare-reviews', {...base, reviews: [{id: firstId, verdict: 'benign', notes: '', updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#compare-text')).toHaveText('theirs.json: 0 / 1 shared judgments agree · κ 0.00 · 1 disagree');
+  await page.locator('#review-verdict').selectOption('benign');
+  await expect(page.locator('#compare-text')).toHaveText('theirs.json: 1 / 1 shared judgments agree · κ 1.00 · 0 disagree');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#clear-comparison').click();
+  await upload('#import-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [2], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('does not exist in ' + secondId);
+  await upload('#compare-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [2], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('Comparison failed');
+  await upload('#import-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [1], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('Imported 1 reviews');
+});

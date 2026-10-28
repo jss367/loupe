@@ -1,5 +1,5 @@
 import {
-  compareNotebook, filterAndSort, labelAgreement, makeNotebook, matchRanges, matchesRole,
+  compareNotebook, comparisonStats, filterAndSort, labelAgreement, makeNotebook, matchRanges, matchesRole,
   mergeNotebook, normalizeEvidence, parseQuery, reviewsCsv, termPatterns,
 } from './model.mjs';
 
@@ -8,7 +8,7 @@ const state = {
   records: [], candidates: [], catalog: [], id: null, record: null, meta: null,
   page: 0, pageSize: 50, raw: false, expanded: false, request: 0,
   detailRequest: 0, match: -1, marks: [], reviews: Object.create(null), hideLabels: false,
-  patterns: [], comparison: null, fileMode: 'import',
+  patterns: [], scope: {roles: [], tools: []}, comparison: null, comparisonName: '', fileMode: 'import',
 };
 let saved = new Set();
 try {
@@ -29,12 +29,26 @@ function notify(message, error = false) {
   $('app-status').classList.remove('hidden');
   $('app-status').classList.toggle('error', error);
 }
-function updatePatterns() {
-  state.patterns = termPatterns(parseQuery($('search').value, {regex: $('regex').checked}));
+// Highlight patterns are set only after the server accepted the same query,
+// so the browser never runs a pattern the server rejected as unsafe.
+function setPatterns(query, regex) {
+  const parsed = parseQuery(query, {regex});
+  state.patterns = termPatterns(parsed);
+  state.scope = {roles: parsed.roles, tools: parsed.tools};
 }
-function highlight(text) {
+// Does a message fall inside the role:/tool: scope of the current search?
+function inScope(message, toolNames) {
+  const {roles, tools} = state.scope;
+  if (roles.length && !roles.includes(String(message.role ?? '').toLowerCase())) return false;
+  if (!tools.length) return true;
+  const names = (message.tool_calls || []).map(call => String(call.name || call.function?.name || '').toLowerCase());
+  if (toolNames.has(message.tool_call_id)) names.push(toolNames.get(message.tool_call_id).toLowerCase());
+  if (message.role === 'tool' && message.name) names.push(String(message.name).toLowerCase());
+  return names.some(name => tools.includes(name));
+}
+function highlight(text, patterns = state.patterns) {
   const source = String(text ?? '');
-  const ranges = matchRanges(source, state.patterns);
+  const ranges = matchRanges(source, patterns);
   if (!ranges.length) return esc(source);
   let out = '', start = 0;
   for (const [from, to] of ranges) {
@@ -122,7 +136,7 @@ function restoreUrl() {
 async function refresh() {
   const token = ++state.request;
   $('result-count').textContent = 'Searching…';
-  updatePatterns();
+  const query = $('search').value, regex = $('regex').checked;
   const params = new URLSearchParams({
     q: $('search').value, regex: $('regex').checked ? '1' : '', label: labelsShown() ? $('label').value : '',
     split: $('split').value, examples: labelsShown() && $('examples').checked ? '1' : '',
@@ -130,9 +144,16 @@ async function refresh() {
   try {
     const data = await api('/api/records?' + params);
     if (token !== state.request) return;
+    setPatterns(query, regex);
     state.candidates = data.records;
     await applyFilters();
-  } catch (error) { if (token === state.request) $('result-count').textContent = error.message; }
+  } catch (error) {
+    if (token !== state.request) return;
+    setPatterns('', false);
+    renderList();
+    $('result-count').textContent = error.message;
+    if (state.record) renderConversation();
+  }
 }
 async function applyFilters({autoSelect = true} = {}) {
   const candidates = state.candidates.filter(record => !$('saved-only').checked || saved.has(record.id));
@@ -186,6 +207,8 @@ function showEmpty(title, description) {
   $('welcome').classList.remove('hidden');
   $('welcome').innerHTML = '<b>' + esc(title) + '</b>' + esc(description);
   ['detail-head', 'toolbar', 'conversation', 'message-navigation'].forEach(id => $(id).classList.add('hidden'));
+  $('conversation').replaceChildren();
+  state.marks = [];
 }
 async function selectRecord(id) {
   state.id = id;
@@ -261,10 +284,13 @@ function renderConversation() {
     for (const message of messages) {
       for (const call of message.tool_calls || []) tools.set(call.id, call.name || call.function?.name || 'Tool');
     }
+    const allPatterns = state.patterns;
     const outline = $('message-outline');
     outline.replaceChildren(new Option('Choose a message…', ''));
     messages.forEach((message, index) => {
       if (!matchesRole(message, $('role-filter').value)) return;
+      // Marks follow the server's scope: out-of-scope messages get no marks.
+      state.patterns = inScope(message, tools) ? allPatterns : [];
       const role = message.role || 'unknown', node = document.createElement('article');
       // Dataset-controlled roles never become HTML or CSS class attributes.
       node.className = 'message';
@@ -318,6 +344,7 @@ function renderConversation() {
       }
       inner.append(node);
     });
+    state.patterns = allPatterns;
     const count = outline.options.length - 1;
     $('visible-messages').textContent = count + ' / ' + messages.length + ' messages';
     outline.disabled = !count;
@@ -402,6 +429,7 @@ function updateProgress() {
   const count = Object.values(state.reviews).filter(entry => entry.verdict).length;
   $('review-progress').textContent = count + ' / ' + state.catalog.length + ' judged · saved in this browser';
   $('export-reviews').disabled = $('export-csv').disabled = !Object.keys(state.reviews).length;
+  updateComparison();
   const agreement = $('agreement');
   const compared = labelsShown() ? state.catalog.filter(record => labelAgreement(record, state.reviews[record.id])) : [];
   agreement.classList.toggle('hidden', !compared.length);
@@ -504,17 +532,25 @@ function applyLabelVisibility() {
   renderList();
   updateProgress();
 }
-function setComparison(result, filename) {
-  state.comparison = result?.other || null;
+function setComparison(other, filename) {
+  state.comparison = other || null;
+  state.comparisonName = filename || '';
   $('compare-option').hidden = !state.comparison;
   $('compare-summary').classList.toggle('hidden', !state.comparison);
-  if (state.comparison) {
-    const kappa = result.kappa === null ? 'n/a' : result.kappa.toFixed(2);
-    $('compare-text').textContent = filename + ': ' + result.agree + ' / ' + result.both + ' shared judgments agree · κ ' + kappa +
-      ' · ' + result.disagreements.length + ' disagree';
-  } else if ($('review-filter').value === 'compare-disagree') $('review-filter').value = '';
+  if (!state.comparison && $('review-filter').value === 'compare-disagree') $('review-filter').value = '';
+  updateComparison();
   if (state.record) updateReviewSummary();
 }
+// The comparison summary follows the current local reviews, so changing a
+// judgment after loading a notebook updates agreement and kappa immediately.
+function updateComparison() {
+  if (!state.comparison) return;
+  const stats = comparisonStats(state.reviews, state.comparison);
+  const kappa = stats.kappa === null ? 'n/a' : stats.kappa.toFixed(2);
+  $('compare-text').textContent = state.comparisonName + ': ' + stats.agree + ' / ' + stats.both + ' shared judgments agree · κ ' + kappa +
+    ' · ' + stats.disagreements.length + ' disagree';
+}
+const knownRecords = () => new Map(state.catalog.map(record => [record.id, record.message_count]));
 
 let timer;
 $('search').oninput = () => { clearTimeout(timer); timer = setTimeout(refresh, 200); };
@@ -567,17 +603,17 @@ $('review-file').onchange = async () => {
   try {
     if (file.size > 5 * 1024 * 1024) throw Error('Review notebooks must be smaller than 5 MB.');
     const notebook = JSON.parse(await file.text());
-    const knownIds = new Set(state.catalog.map(record => record.id));
+    const known = knownRecords();
     if (state.fileMode === 'compare') {
-      const result = compareNotebook(notebook, state.reviews, state.meta, knownIds);
-      setComparison(result, file.name);
+      const result = compareNotebook(notebook, state.reviews, state.meta, known);
+      setComparison(result.other, file.name);
       if (result.disagreements.length) $('review-filter').value = 'compare-disagree';
       await applyFilters();
       notify('Compared ' + result.count + ' reviews from ' + file.name + '. ' + result.agree + ' of ' + result.both +
         ' shared judgments agree. Skipped ' + result.skipped + ' unknown records. The comparison is not saved.');
       return;
     }
-    const result = mergeNotebook(notebook, state.reviews, state.meta, knownIds);
+    const result = mergeNotebook(notebook, state.reviews, state.meta, known);
     // Persist before replacing in-memory work, so a failed import never loses edits.
     localStorage.setItem(reviewKey(), JSON.stringify(makeNotebook(result.reviews, state.meta)));
     state.reviews = result.reviews;
@@ -621,7 +657,7 @@ document.addEventListener('keydown', event => {
     renderDatasetInfo();
     try {
       const stored = localStorage.getItem(reviewKey());
-      if (stored) state.reviews = mergeNotebook(JSON.parse(stored), {}, meta, new Set(data.records.map(record => record.id))).reviews;
+      if (stored) state.reviews = mergeNotebook(JSON.parse(stored), {}, meta, knownRecords()).reviews;
     } catch { notify('Saved reviews could not be loaded. Browser storage may be unavailable or contain an invalid notebook.', true); }
     updateProgress();
     $('import-reviews').disabled = $('compare-reviews').disabled = false;
