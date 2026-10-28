@@ -529,3 +529,25 @@ test('the synthetic Tool output heading is never marked', async ({page}) => {
   await expect(page.locator('#message-1 .role mark')).toHaveCount(0);
   await expect(page.locator('#message-1 .content mark')).toHaveText('output');
 });
+
+test('ID-less tool calls and outputs are not linked in the browser', async ({page}) => {
+  const id = 'train-0000-egregious-scheming_shared';
+  const summary = {id, source_id: 'egregious-scheming_shared', row_index: 0, title: 'Unlinked tool', preview: '', label: 1,
+    split: 'train', message_count: 3, tool_call_count: 1, example_note: null, snippet: 'zapper'};
+  const trajectory = {messages: [
+    {role: 'user', content: 'Run it.'},
+    {role: 'assistant', content: 'Calling.', tool_calls: [{function: {name: 'zapper', arguments: '{}'}}]},
+    {role: 'tool', content: 'done'},
+  ]};
+  await page.route('**/api/records?*', route => route.fulfill({json: {records: [summary], total: 1}}));
+  await page.route('**/api/records/' + id, route => route.fulfill({json: {...summary, trajectory}}));
+  await page.goto('/');
+  await expect(page.locator('#title')).toHaveText('Unlinked tool');
+  await expect(page.locator('#message-2 .role')).toHaveText('Tool output');
+  await page.locator('#search').fill('zapper');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-1 .call summary mark')).toHaveText('zapper');
+  await expect(page.locator('#message-2 mark')).toHaveCount(0);
+  await page.locator('#search').fill('tool:zapper done');
+  await expect(page.locator('#message-2 mark')).toHaveCount(0);
+});

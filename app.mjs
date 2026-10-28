@@ -56,7 +56,7 @@ function inScope(message, toolNames) {
   if (roles.length && !roles.includes(String(message.role ?? '').toLowerCase())) return false;
   if (!tools.length) return true;
   const names = (message.tool_calls || []).map(call => String(call.name || call.function?.name || '').toLowerCase());
-  if (toolNames.has(message.tool_call_id)) names.push(toolNames.get(message.tool_call_id).toLowerCase());
+  if (message.tool_call_id != null && toolNames.has(message.tool_call_id)) names.push(toolNames.get(message.tool_call_id).toLowerCase());
   if (message.role === 'tool' && message.name) names.push(String(message.name).toLowerCase());
   return names.some(name => tools.includes(name));
 }
@@ -389,7 +389,8 @@ function renderConversation() {
     const evidence = evidenceSet();
     const tools = new Map();
     for (const message of messages) {
-      for (const call of message.tool_calls || []) tools.set(call.id, call.name || call.function?.name || 'Tool');
+      // Only calls with an ID can be linked to outputs, as on the server.
+      for (const call of message.tool_calls || []) if (call.id != null) tools.set(call.id, call.name || call.function?.name || 'Tool');
     }
     const allPatterns = state.patterns;
     const outline = $('message-outline');
@@ -408,7 +409,7 @@ function renderConversation() {
       // A message's own name is searchable for every role, so headings show
       // it; tool headings also show the linked call's name.
       const own = message.name ? String(message.name) : '';
-      const linked = role === 'tool' ? tools.get(message.tool_call_id) || '' : '';
+      const linked = role === 'tool' && message.tool_call_id != null ? tools.get(message.tool_call_id) || '' : '';
       const base = role === 'tool' ? linked || own || 'Tool output' : role === 'user' ? 'User request' : role;
       const name = own && own !== base ? base + ' · ' + own : base;
       // Tool names are searchable text, so a tool heading can carry a match.

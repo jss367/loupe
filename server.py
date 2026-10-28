@@ -32,15 +32,65 @@ def content_text(content):
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
 
 
-def _js_numbers(value):
-    """JSON.stringify prints integral floats without a fraction; mirror that."""
-    if isinstance(value, float) and value.is_integer() and abs(value) < 1e21:
-        return int(value)
-    if isinstance(value, list):
-        return [_js_numbers(item) for item in value]
+def js_number(value):
+    """Number::toString from ECMAScript: shortest round-trip digits, decimal
+    notation for 1e-7 <= |x| < 1e21, exponent notation otherwise."""
+    from decimal import Decimal
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and abs(value) < 2 ** 53:
+        return str(value)
+    value = float(value)
+    if value != value or value in (float("inf"), float("-inf")):
+        return "null"
+    if value == 0:
+        return "0"
+    sign = "-" if value < 0 else ""
+    digits, exponent = Decimal(repr(abs(value))).as_tuple()[1:]
+    text = "".join(map(str, digits)).rstrip("0")
+    exponent += len(digits) - len(text)
+    k, n = len(text), len(text) + exponent
+    if k <= n <= 21:
+        body = text + "0" * (n - k)
+    elif 0 < n <= 21:
+        body = text[:n] + "." + text[n:]
+    elif -6 < n <= 0:
+        body = "0." + "0" * (-n) + text
+    else:
+        mantissa = text[0] + ("." + text[1:] if k > 1 else "")
+        body = mantissa + "e" + ("+" if n - 1 >= 0 else "-") + str(abs(n - 1))
+    return sign + body
+
+
+def _js_key_order(keys):
+    """JavaScript lists canonical array-index keys first, ascending, then the rest in insertion order."""
+    def index_key(key):
+        return key.isdigit() and (key == "0" or not key.startswith("0")) and int(key) < 2 ** 32 - 1
+    indexed = sorted((key for key in keys if index_key(key)), key=int)
+    return indexed + [key for key in keys if not index_key(key)]
+
+
+def js_stringify(value, depth=0):
+    """JSON.stringify(value, null, 2), including number and key-order rules."""
+    pad, inner = "  " * depth, "  " * (depth + 1)
+    if value is None:
+        return "null"
+    if isinstance(value, (bool, int, float)):
+        return js_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, dict):
-        return {key: _js_numbers(item) for key, item in value.items()}
-    return value
+        if not value:
+            return "{}"
+        items = [inner + json.dumps(str(key), ensure_ascii=False) + ": " + js_stringify(value[key], depth + 1)
+                 for key in _js_key_order([str(key) for key in value])]
+        return "{\n" + ",\n".join(items) + "\n" + pad + "}"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        return "[\n" + ",\n".join(inner + js_stringify(item, depth + 1) for item in value) + "\n" + pad + "]"
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def _reject_constant(name):
@@ -49,8 +99,8 @@ def _reject_constant(name):
 
 def render_text(value):
     """Mirror stringContent in app.mjs so indexed text equals visible text:
-    null renders empty, JSON values pretty-print with two-space indent, and a
-    string that parses as JSON is re-rendered the same way."""
+    null renders empty, JSON values pretty-print like JSON.stringify(v, null, 2),
+    and a string that parses as JSON is re-rendered the same way."""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -58,7 +108,7 @@ def render_text(value):
             value = json.loads(value, parse_constant=_reject_constant)
         except ValueError:
             return value
-    return json.dumps(_js_numbers(value), ensure_ascii=False, indent=2)
+    return js_stringify(value)
 
 
 LABEL_VALUES = {"0": 0, "1": 1, "benign": 0, "scheming": 1, "false": 0, "true": 1, "negative": 0, "positive": 1}

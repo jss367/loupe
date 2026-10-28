@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from server import MAX_PATTERN, filter_records, load_conversations, make_record, normalize_label, parse_query, render_text, unsafe_pattern
+from server import MAX_PATTERN, filter_records, js_number, js_stringify, load_conversations, make_record, normalize_label, parse_query, render_text, unsafe_pattern
 
 MESSAGES = [
     {"role": "system", "content": "Inspect the evidence."},
@@ -91,6 +91,23 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(found('"k": "v"'), ["all-0000-p"])
         self.assertEqual(found('"1,"'), ["all-0000-p"])
         self.assertEqual(record["all-0000-p"]["messages"][0]["text"], "")
+
+    def test_numbers_keys_and_escapes_format_like_javascript(self):
+        # Expected strings were produced by JSON.stringify in Node.
+        values = [0.000001, 1e-7, 1.5e-10, 1e21, 1e20, 123456789012345680000, 0.1, 100, 2.5, -0.0, 1 / 3, 5e-324,
+                  1.7976931348623157e308, 12345678901234567890, 9007199254740993, 0.1 + 0.2, 1e16, 123456.789, 1e-6, 1.23e-7]
+        expected = ["0.000001", "1e-7", "1.5e-10", "1e+21", "100000000000000000000", "123456789012345680000", "0.1", "100",
+                    "2.5", "0", "0.3333333333333333", "5e-324", "1.7976931348623157e+308", "12345678901234567000",
+                    "9007199254740992", "0.30000000000000004", "10000000000000000", "123456.789", "0.000001", "1.23e-7"]
+        self.assertEqual([js_number(v) for v in values], expected)
+        self.assertEqual(js_number(float("nan")), "null")
+        self.assertEqual(js_number(True), "true")
+        self.assertEqual(js_stringify({"b": 1, "2": 2, "a": 3, "10": 4, "01": 5, "-1": 6}),
+                         '{\n  "2": 2,\n  "10": 4,\n  "b": 1,\n  "a": 3,\n  "01": 5,\n  "-1": 6\n}')
+        self.assertEqual(js_stringify("tab\t ctl\u0001 del\u007f quote\" bs\\ uni\u2028"),
+                         '"tab\\t ctl\\u0001 del\u007f quote\\" bs\\\\ uni\u2028"')
+        self.assertEqual(render_text({"rate": 1e-7, "tiny": 0.000001}), '{\n  "rate": 1e-7,\n  "tiny": 0.000001\n}')
+        self.assertEqual(render_text("[1e-07]"), "[\n  1e-7\n]")
 
     def test_scoped_terms_ignore_trajectory_ids(self):
         self.assertEqual(search(q="train-0001"), ["train-0001-b"])
