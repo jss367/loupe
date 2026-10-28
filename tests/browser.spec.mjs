@@ -457,3 +457,42 @@ test('a stale search response is ignored once the query changes', async ({page})
   await expect(page.locator('#welcome')).toBeHidden();
   await expect(page.locator('#result-count')).toHaveText('Searching…');
 });
+
+test('every highlight worker is terminated after completion, timeout, or cancellation', async ({page}) => {
+  await page.addInitScript(() => {
+    window.__workers = {created: 0, terminated: 0};
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+      constructor(...args) { super(...args); window.__workers.created++; }
+      terminate() { window.__workers.terminated++; return super.terminate(); }
+    };
+  });
+  await open(page);
+  const counts = () => page.evaluate(() => window.__workers);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('rep.rt');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#next').click();
+  await expect(page.locator('#title')).toHaveText('Beta investigation');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#previous').click();
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#role-filter').selectOption('tool');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#role-filter').selectOption('');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  let seen = await counts();
+  expect(seen.created).toBeGreaterThan(4);
+  expect(seen.terminated).toBe(seen.created);
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#app-status')).toContainText('Highlighting stopped');
+  seen = await counts();
+  expect(seen.terminated).toBe(seen.created);
+});

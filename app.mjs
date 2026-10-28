@@ -10,7 +10,7 @@ const state = {
   detailRequest: 0, match: -1, marks: [], reviews: Object.create(null), hideLabels: false,
   patterns: [], scope: {roles: [], tools: [], regex: false}, query: null, comparison: null, comparisonName: '', fileMode: 'import',
   segments: new Map(), segmentId: 0, highlightJobs: {list: null, conversation: null},
-  markBudget: MAX_MARKS, truncated: false,
+  view: 'conversation', markBudget: MAX_MARKS, truncated: {list: false, conversation: false},
 };
 const HIGHLIGHT_BUDGET = 2000;
 let saved = new Set();
@@ -68,7 +68,7 @@ function highlight(text, ranges) {
   if (!ranges.length) return esc(source);
   let out = '', start = 0;
   for (const [from, to] of ranges) {
-    if (state.markBudget <= 0) { state.truncated = true; break; }
+    if (state.markBudget <= 0) { state.truncated[state.view] = true; break; }
     state.markBudget--;
     out += esc(source.slice(start, from)) + '<mark>' + esc(source.slice(from, to)) + '</mark>';
     start = to;
@@ -96,7 +96,7 @@ function marked(text, mode, patterns = state.patterns) {
   if (!patterns.length) return render([]);
   if (!state.scope.regex) {
     const scan = state.markBudget > 0 ? scanRanges(source, patterns, state.markBudget) : {ranges: [], truncated: true};
-    if (scan.truncated) state.truncated = true;
+    if (scan.truncated) state.truncated[state.view] = true;
     return render(scan.ranges);
   }
   const id = ++state.segmentId;
@@ -106,13 +106,20 @@ function marked(text, mode, patterns = state.patterns) {
 // Each view (record list, conversation) owns at most one highlight job with
 // its own worker and watchdog. Re-rendering a view terminates its previous
 // job first, so a slow pattern on an abandoned view cannot delay or cancel
-// the view that replaced it.
-function cancelHighlight(view) {
-  const job = state.highlightJobs[view];
-  if (!job) return;
+// the view that replaced it. Every job ends with terminate(), whether it
+// completed, timed out, or was cancelled, so workers never accumulate.
+function beginView(view) {
+  state.view = view;
+  state.markBudget = MAX_MARKS;
+  state.truncated[view] = false;
+}
+function endJob(view, job) {
   clearTimeout(job.timer);
   job.worker.terminate();
-  state.highlightJobs[view] = null;
+  if (state.highlightJobs[view] === job) state.highlightJobs[view] = null;
+}
+function cancelHighlight(view) {
+  if (state.highlightJobs[view]) endJob(view, state.highlightJobs[view]);
 }
 function flushHighlights(view) {
   cancelHighlight(view);
@@ -120,12 +127,12 @@ function flushHighlights(view) {
   const pending = state.segments;
   state.segments = new Map();
   const job = {worker: new Worker('/highlight.mjs', {type: 'module'}), pending, budget: state.markBudget, timer: null};
-  const settle = () => { clearTimeout(job.timer); state.highlightJobs[view] = null; };
   job.worker.onmessage = ({data}) => {
     if (state.highlightJobs[view] !== job) return;
-    settle();
+    endJob(view, job);
+    state.view = view;
     state.markBudget = job.budget;
-    if (data.truncated) state.truncated = true;
+    if (data.truncated) state.truncated[view] = true;
     for (const [id, ranges] of data.results) {
       const node = document.querySelector('[data-hl="' + id + '"]'), segment = pending.get(id);
       if (!node || !segment || !ranges.length) continue;
@@ -135,8 +142,7 @@ function flushHighlights(view) {
   };
   job.timer = setTimeout(() => {
     if (state.highlightJobs[view] !== job) return;
-    job.worker.terminate();
-    settle();
+    endJob(view, job);
     notify('Highlighting stopped after 2 seconds because this pattern is slow on this text. Search results are unaffected.', true);
     if (view === 'conversation') collectMarks();
   }, HIGHLIGHT_BUDGET);
@@ -149,7 +155,7 @@ function collectMarks() {
   state.match = -1;
   $('match-controls').classList.toggle('hidden', !state.patterns.length);
   $('match-count').textContent = state.highlightJobs.conversation ? 'Highlighting…'
-    : state.truncated ? 'First ' + state.marks.length.toLocaleString() + ' matches shown' : state.marks.length + ' matches';
+    : state.truncated.conversation ? 'First ' + state.marks.length.toLocaleString() + ' matches shown' : state.marks.length + ' matches';
   $('prev-match').disabled = $('next-match').disabled = !state.marks.length;
 }
 function inline(line) {
@@ -272,7 +278,7 @@ async function applyFilters({autoSelect = true} = {}) {
 }
 function renderList() {
   const list = $('records');
-  state.markBudget = MAX_MARKS;
+  beginView('list');
   list.replaceChildren();
   $('result-count').textContent = state.records.length.toLocaleString() + (state.records.length === 1 ? ' conversation' : ' conversations');
   const pages = Math.max(1, Math.ceil(state.records.length / state.pageSize));
@@ -362,8 +368,7 @@ function outlineLabel(index, name, preview, evidence) {
 }
 function renderConversation() {
   if (!state.record) return;
-  state.markBudget = MAX_MARKS;
-  state.truncated = false;
+  beginView('conversation');
   const container = $('conversation');
   container.replaceChildren();
   const inner = document.createElement('div');
