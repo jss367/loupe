@@ -13,7 +13,7 @@ messages = [
         {"id": "call-1", "function": {"name": "read_file", "arguments": '{"path":"report.txt"}'}}
     ]},
     {"role": "tool", "tool_call_id": "call-1", "name": "alias_tool", "content": "Evidence from the report: café 🐦 <script>alert('unsafe')</script>"},
-    {"role": "assistant", "content": "The report supports the plan.\n```python\nprint(\"**fenced**\")\n```\nUse `inline` code."},
+    {"role": "assistant", "name": "planner", "content": "The report supports the plan.\n```python\nprint(\"**fenced**\")\n```\nUse `inline` code."},
     {"role": "developer", "content": "Custom role message. aab\n" + "line\n" * 2500},
 ]
 records = {}

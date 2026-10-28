@@ -405,13 +405,16 @@ function renderConversation() {
       node.classList.toggle('evidence', evidence.has(index));
       node.id = 'message-' + index;
       node.tabIndex = -1;
-      // Tool headings show the linked call's name and the message's own name
-      // when both exist, since both are searchable.
-      const own = role === 'tool' && message.name ? String(message.name) : '';
+      // A message's own name is searchable for every role, so headings show
+      // it; tool headings also show the linked call's name.
+      const own = message.name ? String(message.name) : '';
       const linked = role === 'tool' ? tools.get(message.tool_call_id) || '' : '';
-      const name = role === 'tool' ? (linked && own && linked !== own ? linked + ' · ' + own : linked || own || 'Tool output') : role === 'user' ? 'User request' : role;
+      const base = role === 'tool' ? linked || own || 'Tool output' : role === 'user' ? 'User request' : role;
+      const name = own && own !== base ? base + ' · ' + own : base;
       // Tool names are searchable text, so a tool heading can carry a match.
-      node.innerHTML = '<div class="message-head"><span class="role">' + (role === 'tool' ? marked(name, 'plain') : esc(name)) + '</span><span class="message-head-right">' +
+      const baseHtml = role === 'tool' ? marked(base, 'plain') : esc(base);
+      const heading = own && own !== base ? baseHtml + ' · ' + marked(own, 'plain') : baseHtml;
+      node.innerHTML = '<div class="message-head"><span class="role">' + heading + '</span><span class="message-head-right">' +
         '<button class="evidence-toggle" aria-pressed="' + evidence.has(index) + '" title="Mark this message as evidence for your review">' + (evidence.has(index) ? '⚑ Evidence' : '⚐ Evidence') + '</button>' +
         '<span class="message-number">' + String(index + 1).padStart(2, '0') + ' / ' + messages.length + '</span></span></div>';
       node.querySelector('.evidence-toggle').onclick = () => toggleEvidence(index);

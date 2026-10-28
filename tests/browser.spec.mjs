@@ -496,3 +496,13 @@ test('every highlight worker is terminated after completion, timeout, or cancell
   seen = await counts();
   expect(seen.terminated).toBe(seen.created);
 });
+
+test('named non-tool messages show and highlight their name', async ({page}) => {
+  await open(page);
+  await expect(page.locator('#message-4 .role')).toHaveText('assistant · planner');
+  await page.locator('#search').fill('role:assistant planner');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-4 .role mark')).toHaveText('planner');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-2 .role')).toHaveText('assistant');
+});
