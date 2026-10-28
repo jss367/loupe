@@ -167,6 +167,13 @@ def make_record(ident, source_id, row_index, split, trajectory, label, example_n
     messages = trajectory["messages"]
     if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
         raise ValueError(f"Record {source_id!r} needs a messages array of objects")
+    for index, message in enumerate(messages):
+        calls = message.get("tool_calls")
+        if calls is None:
+            continue
+        if not isinstance(calls, list) or not all(
+                isinstance(call, dict) and (call.get("function") is None or isinstance(call["function"], dict)) for call in calls):
+            raise ValueError(f"Record {source_id!r} message {index} has a malformed tool_calls entry; expected objects with an optional function object")
     first_user = next((content_text(m.get("content", "")) for m in messages if m.get("role") == "user"), "Untitled task")
     if not title:
         lines = [line.strip().strip("*# ") for line in first_user.splitlines() if line.strip()]

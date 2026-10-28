@@ -233,11 +233,17 @@ class LoaderTests(unittest.TestCase):
     def test_invalid_files(self):
         with tempfile.TemporaryDirectory() as directory:
             for name, content in [("a.json", '{"records": 5}'), ("b.json", '[{"id": 1}]'), ("c.json", '[{"messages": "x"}]'),
-                                  ("d.json", '[{"messages": [], "label": 7}]')]:
+                                  ("d.json", '[{"messages": [], "label": 7}]'),
+                                  ("e.json", '[{"messages": [{"role": "assistant", "tool_calls": [null]}]}]'),
+                                  ("f.json", '[{"messages": [{"role": "assistant", "tool_calls": [{"function": "x"}]}]}]'),
+                                  ("g.json", '[{"messages": [{"role": "assistant", "tool_calls": "abc"}]}]')]:
                 path = Path(directory) / name
                 path.write_text(content)
                 with self.assertRaises(ValueError):
                     load_conversations(path)
+            ok = Path(directory) / "ok.json"
+            ok.write_text('[{"messages": [{"role": "assistant", "tool_calls": null}, {"role": "assistant", "tool_calls": [{"name": "x"}]}]}]')
+            self.assertEqual(len(load_conversations(ok)[0]), 1)
 
 
 if __name__ == "__main__":
