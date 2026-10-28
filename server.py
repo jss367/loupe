@@ -1,6 +1,7 @@
 """Loupe: local inspection of Gloom trajectories and survey datasets."""
 import argparse
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -25,6 +26,68 @@ def content_text(content):
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
 
 
+LABEL_VALUES = {"0": 0, "1": 1, "benign": 0, "scheming": 1, "false": 0, "true": 1, "negative": 0, "positive": 1}
+
+
+def normalize_label(value):
+    """Accept 0/1, booleans, or benign/scheming strings; None keeps a record unlabeled."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return int(value)
+    if isinstance(value, str) and value.strip().lower() in LABEL_VALUES:
+        return LABEL_VALUES[value.strip().lower()]
+    raise ValueError(f"Unsupported label {value!r}; use 0, 1, benign, or scheming")
+
+
+def message_text(message, tool_names):
+    """Searchable text for one message: content, tool calls, and the tool name."""
+    pieces = [content_text(message.get("content", ""))]
+    pieces.extend(json.dumps(call, ensure_ascii=False) for call in message.get("tool_calls") or [])
+    if message.get("name"):
+        pieces.append(str(message["name"]))
+    if message.get("tool_call_id") in tool_names:
+        pieces.append(tool_names[message["tool_call_id"]])
+    return "\n".join(pieces)
+
+
+def make_record(ident, source_id, row_index, split, trajectory, label, example_note=None, title=None):
+    messages = trajectory["messages"]
+    if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+        raise ValueError(f"Record {source_id!r} needs a messages array of objects")
+    first_user = next((content_text(m.get("content", "")) for m in messages if m.get("role") == "user"), "Untitled task")
+    if not title:
+        lines = [line.strip().strip("*# ") for line in first_user.splitlines() if line.strip()]
+        title = next((line for line in lines if len(line) > 12), lines[0] if lines else "Untitled task")
+    tool_names = {}
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            name = call.get("name") or (call.get("function") or {}).get("name")
+            if name and call.get("id") is not None:
+                tool_names[call["id"]] = str(name)
+    parts = []
+    for message in messages:
+        text = message_text(message, tool_names)
+        tools = {str(call.get("name") or (call.get("function") or {}).get("name") or "").lower()
+                 for call in message.get("tool_calls") or []}
+        if message.get("tool_call_id") in tool_names:
+            tools.add(tool_names[message["tool_call_id"]].lower())
+        tools.discard("")
+        parts.append({"role": str(message.get("role", "")).lower(), "tools": tools, "text": text, "lower": text.lower()})
+    text = "\n".join(part["text"] for part in parts)
+    summary = {
+        "id": ident, "source_id": source_id, "row_index": row_index,
+        "title": str(title)[:130], "preview": first_user[:300],
+        "label": label, "split": split,
+        "message_count": len(messages),
+        "tool_call_count": sum(len(m.get("tool_calls") or []) for m in messages),
+        "example_note": example_note,
+    }
+    return {"summary": summary, "messages": parts, "text": text, "lower": text.lower(), "trajectory": trajectory}
+
+
 def load_records(directory):
     import pandas as pd
 
@@ -36,44 +99,129 @@ def load_records(directory):
             raise SystemExit(f"Missing {path}. Run python download_example.py or see README.md for setup instructions.")
         for row_index, row in enumerate(pd.read_parquet(path).to_dict("records")):
             trajectory = json.loads(row["trajectory_data"])
-            messages = trajectory["messages"]
-            first_user = next((content_text(m.get("content", "")) for m in messages if m["role"] == "user"), "Untitled task")
-            lines = [line.strip().strip("*# ") for line in first_user.splitlines() if line.strip()]
-            title = next((line for line in lines if len(line) > 12), lines[0] if lines else "Untitled task")
-            searchable = "\n".join(content_text(m) for m in messages).lower()
             # Source IDs are reused for different conversations in this release.
             # Keep every row and expose the original ID separately for provenance.
             source_id = row["id"]
             ident = f"{split}-{row_index:04d}-{source_id}"
-            is_example = source_id not in noted_examples and EXAMPLE_NEEDLES.get(source_id, "") in searchable
+            record = make_record(ident, source_id, row_index, split, trajectory, int(row["ground_truth"]))
+            is_example = source_id not in noted_examples and EXAMPLE_NEEDLES.get(source_id, "") in record["lower"]
             note = EXAMPLES.get(source_id) if is_example else None
             if note:
                 noted_examples.add(source_id)
-            summary = {
-                "id": ident, "source_id": source_id, "row_index": row_index,
-                "title": title[:130], "preview": first_user[:300],
-                "label": int(row["ground_truth"]), "split": split,
-                "message_count": len(messages),
-                "tool_call_count": sum(len(m.get("tool_calls") or []) for m in messages),
-                "example_note": note,
-            }
-            records[ident] = {"summary": summary, "search": searchable, "trajectory": trajectory}
+            record["summary"]["example_note"] = note
+            records[ident] = record
     return records
 
 
+def load_conversations(path):
+    """Load a generic conversation file: JSON Lines, a JSON array, or {"title", "records": [...]}."""
+    import hashlib
+
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
+    title = path.stem
+    if path.suffix.lower() == ".jsonl":
+        items = [json.loads(line) for line in text.splitlines() if line.strip()]
+    else:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            title = str(data.get("title") or title)
+            items = data.get("records")
+        else:
+            items = data
+    if not isinstance(items, list):
+        raise ValueError("Expected a JSON array of records, a JSON Lines file, or an object with a records array")
+    records = {}
+    for row_index, item in enumerate(items):
+        if not isinstance(item, dict) or "messages" not in item:
+            raise ValueError(f"Record {row_index} must be an object with a messages array")
+        source_id = str(item.get("id", row_index))
+        split = str(item.get("split") or "all")
+        ident = f"{split}-{row_index:04d}-{source_id}"
+        records[ident] = make_record(ident, source_id, row_index, split, item, normalize_label(item.get("label")),
+                                     title=item.get("title"))
+    meta = {"source": f"file:{path.name}", "revision": hashlib.sha256(raw).hexdigest(), "title": title,
+            "source_url": None, "note": f"Loaded from {path.name}."}
+    return records, meta
+
+
+GLOOM_META = {"source": SOURCE, "revision": REVISION, "title": "Gloom · Synthetic conversation", "source_url": SOURCE,
+              "note": "Labels supplied by the dataset. Exact match to the paper’s inputs is unverified."}
+TOKEN = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def parse_query(text):
+    """Whitespace-separated terms, quoted phrases, and role:/tool: scopes; mirrors parseQuery in model.mjs."""
+    terms, roles, tools = [], [], []
+    for quoted, bare in TOKEN.findall(text or ""):
+        if bare:
+            kind, sep, value = bare.partition(":")
+            if sep and kind.lower() in ("role", "tool"):
+                if value:
+                    (roles if kind.lower() == "role" else tools).append(value.lower())
+                continue
+            terms.append(bare)
+        elif quoted:
+            terms.append(quoted)
+    return terms, roles, tools
+
+
+def snippet(text, match, radius=70):
+    if not match:
+        return None
+    start, end = max(0, match.start() - radius), min(len(text), match.end() + radius * 2)
+    piece = " ".join(text[start:end].split())
+    return ("…" if start else "") + piece + ("…" if end < len(text) else "")
+
+
 def filter_records(records, query):
-    q = query.get("q", [""])[0].strip().lower()
+    terms, roles, tools = parse_query(query.get("q", [""])[0])
+    use_regex = query.get("regex", [""])[0] == "1"
     label = query.get("label", [""])[0]
     split = query.get("split", [""])[0]
     examples = query.get("examples", [""])[0] == "1"
-    return [r["summary"] for r in records.values()
-            if (not label or str(r["summary"]["label"]) == label)
-            and (not split or r["summary"]["split"] == split)
-            and (not examples or r["summary"]["example_note"])
-            and (not q or q in r["search"] or q in r["summary"]["id"].lower())]
+    if use_regex:
+        try:
+            patterns = [re.compile(term, re.IGNORECASE) for term in terms]
+        except re.error as exc:
+            raise ValueError(f"Invalid regular expression: {exc}")
+    lowered = [term.lower() for term in terms]
+    scoped = bool(roles or tools)
+    results = []
+    for record in records.values():
+        summary = record["summary"]
+        if (label and str(summary["label"]) != label) or (split and summary["split"] != split) \
+                or (examples and not summary["example_note"]):
+            continue
+        if not terms and not scoped:
+            results.append(summary)
+            continue
+        if scoped:
+            parts = [m for m in record["messages"]
+                     if (not roles or m["role"] in roles) and (not tools or m["tools"].intersection(tools))]
+            if not parts:
+                continue
+            if not terms:
+                results.append(summary)
+                continue
+            text, lower = "\n".join(m["text"] for m in parts), "\n".join(m["lower"] for m in parts)
+        else:
+            text, lower = record["text"], record["lower"]
+        ident = summary["id"].lower()
+        if use_regex:
+            if not all(p.search(text) or p.search(ident) for p in patterns):
+                continue
+            first = patterns[0].search(text)
+        else:
+            if not all(t in lower or t in ident for t in lowered):
+                continue
+            first = re.search(re.escape(terms[0]), text, re.IGNORECASE)
+        results.append({**summary, "snippet": snippet(text, first)})
+    return results
 
 
-def make_handler(records=None, survey=None):
+def make_handler(records=None, survey=None, meta=None):
+    meta = meta or GLOOM_META
     class Handler(BaseHTTPRequestHandler):
         def send(self, body, status=200, mime="application/json; charset=utf-8"):
             encoded = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
@@ -125,11 +273,14 @@ def make_handler(records=None, survey=None):
             if parsed.path in ("/app.mjs", "/model.mjs"):
                 return self.send((ROOT / parsed.path[1:]).read_bytes(), mime="text/javascript; charset=utf-8")
             if parsed.path == "/api/records":
-                return self.send({"records": filter_records(records, parse_qs(parsed.query)), "total": len(records)})
+                try:
+                    return self.send({"records": filter_records(records, parse_qs(parsed.query)), "total": len(records)})
+                except ValueError as exc:
+                    return self.send({"error": str(exc)}, 400)
             if parsed.path == "/api/meta":
-                return self.send({"source": SOURCE, "revision": REVISION, "total": len(records),
-                                  "benign": sum(r["summary"]["label"] == 0 for r in records.values()),
-                                  "scheming": sum(r["summary"]["label"] == 1 for r in records.values())})
+                labels = [r["summary"]["label"] for r in records.values()]
+                return self.send({**meta, "total": len(records), "has_labels": any(l is not None for l in labels),
+                                  "benign": labels.count(0), "scheming": labels.count(1)})
             if parsed.path.startswith("/api/records/"):
                 ident = unquote(parsed.path.removeprefix("/api/records/"))
                 record = records.get(ident)
@@ -147,6 +298,7 @@ def main():
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--survey", type=Path, help="Open a loupe.survey.v1 JSON export instead of Gloom")
+    parser.add_argument("--conversations", type=Path, help="Open a JSON or JSON Lines conversation file instead of Gloom")
     args = parser.parse_args()
     if args.survey:
         from survey import Survey
@@ -156,6 +308,12 @@ def main():
             parser.error(f"Cannot open survey: {exc}")
         handler = make_handler(survey=survey)
         count = len(survey.respondents)
+    elif args.conversations:
+        try:
+            records, meta = load_conversations(args.conversations)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"Cannot open conversations: {exc}")
+        handler, count = make_handler(records, meta=meta), len(records)
     else:
         records = load_records(args.data_dir)
         handler, count = make_handler(records), len(records)
