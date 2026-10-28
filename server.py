@@ -41,7 +41,10 @@ def js_number(value):
         return "true" if value else "false"
     if isinstance(value, int) and abs(value) < 2 ** 53:
         return str(value)
-    value = float(value)
+    try:
+        value = float(value)
+    except OverflowError:  # JavaScript parses such integers as Infinity.
+        return "null"
     if value != value or value in (float("inf"), float("-inf")):
         return "null"
     if value == 0:
@@ -63,10 +66,14 @@ def js_number(value):
     return sign + body
 
 
+ARRAY_INDEX = re.compile(r"(0|[1-9][0-9]*)\Z")
+
+
 def _js_key_order(keys):
     """JavaScript lists canonical array-index keys first, ascending, then the rest in insertion order."""
     def index_key(key):
-        return key.isdigit() and (key == "0" or not key.startswith("0")) and int(key) < 2 ** 32 - 1
+        # Canonical ASCII decimal only; Unicode digits such as "²" or "٣" are ordinary keys.
+        return ARRAY_INDEX.fullmatch(key) is not None and int(key) < 2 ** 32 - 1
     indexed = sorted((key for key in keys if index_key(key)), key=int)
     return indexed + [key for key in keys if not index_key(key)]
 

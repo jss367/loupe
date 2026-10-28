@@ -107,6 +107,14 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(js_stringify("tab\t ctl\u0001 del\u007f quote\" bs\\ uni\u2028"),
                          '"tab\\t ctl\\u0001 del\u007f quote\\" bs\\\\ uni\u2028"')
         self.assertEqual(render_text({"rate": 1e-7, "tiny": 0.000001}), '{\n  "rate": 1e-7,\n  "tiny": 0.000001\n}')
+        # Integers beyond the double range parse as Infinity in JavaScript and render as null.
+        self.assertEqual(js_number(10 ** 400), "null")
+        self.assertEqual(js_number(-(10 ** 400)), "null")
+        self.assertEqual(render_text("[" + "9" * 400 + "]"), "[\n  null\n]")
+        self.assertEqual(render_text('{"big": ' + "1" * 400 + '}'), '{\n  "big": null\n}')
+        # Only canonical ASCII indices sort first; Unicode digits and out-of-range values keep insertion order.
+        self.assertEqual(js_stringify({"²": 1, "٣": 2, "３": 3, "4294967295": 4, "7": 5, "x": 6}),
+                         '{\n  "7": 5,\n  "²": 1,\n  "٣": 2,\n  "３": 3,\n  "4294967295": 4,\n  "x": 6\n}')
         self.assertEqual(render_text("[1e-07]"), "[\n  1e-7\n]")
 
     def test_scoped_terms_ignore_trajectory_ids(self):
