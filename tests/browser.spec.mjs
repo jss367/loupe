@@ -402,3 +402,58 @@ test('broad patterns are capped at a fixed number of marks', async ({page}) => {
   await page.locator('#search').fill('report');
   await expect(page.locator('#match-count')).toHaveText(/^\d+ matches$/);
 });
+
+test('one multiline range cannot emit marks past the cap in rich text', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('[\\s\\S]+');
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+  await expect(page.locator('#match-count')).toHaveText('First 2,000 matches shown');
+  await expect(page.locator('#conversation mark')).toHaveCount(2000);
+  expect(await page.locator('#message-5 mark').count()).toBeGreaterThan(1000);
+});
+
+test('switching views while a slow highlight runs does not cancel the new view', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#app-status')).toBeHidden();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#search').fill('report');
+  await page.locator('#regex').uncheck();
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#match-count')).toHaveText(/^\d+ matches$/);
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#app-status')).toBeHidden();
+});
+
+test('a stale search response is ignored once the query changes', async ({page}) => {
+  await open(page);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/records?*', async route => {
+    const query = new URL(route.request().url()).searchParams.get('q');
+    if (query === 'slow') { await held; await route.continue(); }
+    else if (query === 'report') await new Promise(resolve => setTimeout(resolve, 3000)).then(() => route.continue());
+    else await route.continue();
+  });
+  const slowRequest = page.waitForRequest(request => request.url().includes('q=slow'));
+  await page.locator('#search').fill('slow');
+  await slowRequest;
+  // Type the replacement, then let the stale response land inside the debounce window.
+  await page.locator('#search').fill('report');
+  release();
+  await page.waitForTimeout(400);
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await expect(page.locator('#welcome')).toBeHidden();
+  await expect(page.locator('#result-count')).toHaveText('Searching…');
+});

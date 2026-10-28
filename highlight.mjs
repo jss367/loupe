@@ -12,5 +12,5 @@ onmessage = ({data}) => {
     truncated = truncated || scan.truncated;
     results.push([segment.id, scan.ranges]);
   }
-  postMessage({token: data.token, results, truncated});
+  postMessage({results, truncated});
 };

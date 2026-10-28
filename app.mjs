@@ -9,7 +9,7 @@ const state = {
   page: 0, pageSize: 50, raw: false, expanded: false, request: 0,
   detailRequest: 0, match: -1, marks: [], reviews: Object.create(null), hideLabels: false,
   patterns: [], scope: {roles: [], tools: [], regex: false}, query: null, comparison: null, comparisonName: '', fileMode: 'import',
-  segments: new Map(), segmentId: 0, jobs: new Map(), jobToken: 0, worker: null, watchdog: null,
+  segments: new Map(), segmentId: 0, highlightJobs: {list: null, conversation: null},
   markBudget: MAX_MARKS, truncated: false,
 };
 const HIGHLIGHT_BUDGET = 2000;
@@ -60,12 +60,16 @@ function inScope(message, toolNames) {
   if (message.role === 'tool' && message.name) names.push(String(message.name).toLowerCase());
   return names.some(name => tools.includes(name));
 }
-// Escape text and wrap the given [start, end) ranges in <mark>.
+// Escape text and wrap the given [start, end) ranges in <mark>. This is the
+// only place marks are emitted, so the per-view budget is enforced here: a
+// single range that rich() splits across lines still counts one mark per line.
 function highlight(text, ranges) {
   const source = String(text ?? '');
   if (!ranges.length) return esc(source);
   let out = '', start = 0;
   for (const [from, to] of ranges) {
+    if (state.markBudget <= 0) { state.truncated = true; break; }
+    state.markBudget--;
     out += esc(source.slice(start, from)) + '<mark>' + esc(source.slice(from, to)) + '</mark>';
     start = to;
   }
@@ -92,7 +96,6 @@ function marked(text, mode, patterns = state.patterns) {
   if (!patterns.length) return render([]);
   if (!state.scope.regex) {
     const scan = state.markBudget > 0 ? scanRanges(source, patterns, state.markBudget) : {ranges: [], truncated: true};
-    state.markBudget -= scan.ranges.length;
     if (scan.truncated) state.truncated = true;
     return render(scan.ranges);
   }
@@ -100,47 +103,52 @@ function marked(text, mode, patterns = state.patterns) {
   state.segments.set(id, {text: source, mode});
   return '<span data-hl="' + id + '">' + render([]) + '</span>';
 }
-function flushHighlights() {
+// Each view (record list, conversation) owns at most one highlight job with
+// its own worker and watchdog. Re-rendering a view terminates its previous
+// job first, so a slow pattern on an abandoned view cannot delay or cancel
+// the view that replaced it.
+function cancelHighlight(view) {
+  const job = state.highlightJobs[view];
+  if (!job) return;
+  clearTimeout(job.timer);
+  job.worker.terminate();
+  state.highlightJobs[view] = null;
+}
+function flushHighlights(view) {
+  cancelHighlight(view);
   if (!state.segments.size) return;
-  const token = ++state.jobToken;
-  const segments = [...state.segments].map(([id, segment]) => ({id, text: segment.text}));
-  state.jobs.set(token, state.segments);
+  const pending = state.segments;
   state.segments = new Map();
-  if (!state.worker) {
-    state.worker = new Worker('/highlight.mjs', {type: 'module'});
-    state.worker.onmessage = onHighlighted;
-  }
-  state.worker.postMessage({token, query: state.query, segments, limit: state.markBudget});
-  if (!state.watchdog) state.watchdog = setTimeout(stopHighlighting, HIGHLIGHT_BUDGET);
-  $('match-count').textContent = 'Highlighting…';
-}
-function onHighlighted({data}) {
-  const pending = state.jobs.get(data.token);
-  state.jobs.delete(data.token);
-  clearTimeout(state.watchdog);
-  state.watchdog = state.jobs.size ? setTimeout(stopHighlighting, HIGHLIGHT_BUDGET) : null;
-  if (!pending) return;
-  if (data.truncated) state.truncated = true;
-  for (const [id, ranges] of data.results) {
-    const node = document.querySelector('[data-hl="' + id + '"]'), segment = pending.get(id);
-    if (!node || !segment || !ranges.length) continue;
-    node.innerHTML = segment.mode === 'rich' ? rich(segment.text, ranges) : highlight(segment.text, ranges);
-  }
-  collectMarks();
-}
-function stopHighlighting() {
-  state.worker?.terminate();
-  state.worker = null;
-  state.watchdog = null;
-  state.jobs.clear();
-  notify('Highlighting stopped after 2 seconds because this pattern is slow on this text. Search results are unaffected.', true);
-  collectMarks();
+  const job = {worker: new Worker('/highlight.mjs', {type: 'module'}), pending, budget: state.markBudget, timer: null};
+  const settle = () => { clearTimeout(job.timer); state.highlightJobs[view] = null; };
+  job.worker.onmessage = ({data}) => {
+    if (state.highlightJobs[view] !== job) return;
+    settle();
+    state.markBudget = job.budget;
+    if (data.truncated) state.truncated = true;
+    for (const [id, ranges] of data.results) {
+      const node = document.querySelector('[data-hl="' + id + '"]'), segment = pending.get(id);
+      if (!node || !segment || !ranges.length) continue;
+      node.innerHTML = segment.mode === 'rich' ? rich(segment.text, ranges) : highlight(segment.text, ranges);
+    }
+    if (view === 'conversation') collectMarks();
+  };
+  job.timer = setTimeout(() => {
+    if (state.highlightJobs[view] !== job) return;
+    job.worker.terminate();
+    settle();
+    notify('Highlighting stopped after 2 seconds because this pattern is slow on this text. Search results are unaffected.', true);
+    if (view === 'conversation') collectMarks();
+  }, HIGHLIGHT_BUDGET);
+  state.highlightJobs[view] = job;
+  job.worker.postMessage({query: state.query, segments: [...pending].map(([id, segment]) => ({id, text: segment.text})), limit: job.budget});
+  if (view === 'conversation') $('match-count').textContent = 'Highlighting…';
 }
 function collectMarks() {
   state.marks = [...$('conversation').querySelectorAll('mark')];
   state.match = -1;
   $('match-controls').classList.toggle('hidden', !state.patterns.length);
-  $('match-count').textContent = state.jobs.size ? 'Highlighting…'
+  $('match-count').textContent = state.highlightJobs.conversation ? 'Highlighting…'
     : state.truncated ? 'First ' + state.marks.length.toLocaleString() + ' matches shown' : state.marks.length + ' matches';
   $('prev-match').disabled = $('next-match').disabled = !state.marks.length;
 }
@@ -288,7 +296,7 @@ function renderList() {
     list.append(button);
   }
   if (!state.records.length) list.innerHTML = '<div class="empty">No conversations match.</div>';
-  flushHighlights();
+  flushHighlights('list');
   $('page-count').textContent = (state.page + 1) + ' / ' + pages;
   $('prev-page').disabled = state.page === 0;
   $('next-page').disabled = state.page >= pages - 1;
@@ -299,6 +307,7 @@ function showEmpty(title, description) {
   $('welcome').innerHTML = '<b>' + esc(title) + '</b>' + esc(description);
   ['detail-head', 'toolbar', 'conversation', 'message-navigation'].forEach(id => $(id).classList.add('hidden'));
   $('conversation').replaceChildren();
+  cancelHighlight('conversation');
   state.marks = [];
 }
 async function selectRecord(id) {
@@ -448,7 +457,7 @@ function renderConversation() {
     outline.disabled = !count;
     if (!count) inner.innerHTML = '<div class="empty">No messages with this role. Choose another role above.</div>';
   }
-  flushHighlights();
+  flushHighlights('conversation');
   collectMarks();
   updateNavigation();
 }
@@ -648,7 +657,9 @@ function updateComparison() {
 const knownRecords = () => new Map(state.catalog.map(record => [record.id, record.message_count]));
 
 let timer;
-$('search').oninput = () => { clearTimeout(timer); timer = setTimeout(refresh, 200); };
+// Typing invalidates any search still in flight at once, so a slow older
+// response cannot render results for a query the field no longer shows.
+$('search').oninput = () => { state.request++; clearTimeout(timer); timer = setTimeout(refresh, 200); };
 ['label', 'split', 'examples', 'regex'].forEach(id => $(id).onchange = refresh);
 ['saved-only', 'review-filter', 'sort', 'min-messages', 'min-tools'].forEach(id => $(id).onchange = () => applyFilters());
 $('clear').onclick = () => {

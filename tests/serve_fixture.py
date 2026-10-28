@@ -14,7 +14,7 @@ messages = [
     ]},
     {"role": "tool", "tool_call_id": "call-1", "name": "alias_tool", "content": "Evidence from the report: café 🐦 <script>alert('unsafe')</script>"},
     {"role": "assistant", "content": "The report supports the plan.\n```python\nprint(\"**fenced**\")\n```\nUse `inline` code."},
-    {"role": "developer", "content": "Custom role message. aab"},
+    {"role": "developer", "content": "Custom role message. aab\n" + "line\n" * 2500},
 ]
 records = {}
 for index, (title, length, label, calls) in enumerate([
