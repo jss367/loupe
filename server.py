@@ -292,7 +292,7 @@ def filter_records(records, query):
         # match inside the selected messages.
         ident = "" if scoped else summary["id"].lower()
         if use_regex:
-            if not all(timed_search(p, text, deadline) or (ident and p.search(ident)) for p in patterns):
+            if not all(timed_search(p, text, deadline) or (ident and timed_search(p, ident, deadline)) for p in patterns):
                 continue
             first = timed_search(patterns[0], text, deadline)
         else:
@@ -353,7 +353,7 @@ def make_handler(records=None, survey=None, meta=None):
                 return self.send({"error": "Not found"}, 404)
             if parsed.path in ("/", "/index.html"):
                 return self.send((ROOT / "index.html").read_bytes(), mime="text/html; charset=utf-8")
-            if parsed.path in ("/app.mjs", "/model.mjs"):
+            if parsed.path in ("/app.mjs", "/model.mjs", "/highlight.mjs"):
                 return self.send((ROOT / parsed.path[1:]).read_bytes(), mime="text/javascript; charset=utf-8")
             if parsed.path == "/api/records":
                 try:

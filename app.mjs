@@ -8,8 +8,10 @@ const state = {
   records: [], candidates: [], catalog: [], id: null, record: null, meta: null,
   page: 0, pageSize: 50, raw: false, expanded: false, request: 0,
   detailRequest: 0, match: -1, marks: [], reviews: Object.create(null), hideLabels: false,
-  patterns: [], scope: {roles: [], tools: []}, comparison: null, comparisonName: '', fileMode: 'import',
+  patterns: [], scope: {roles: [], tools: [], regex: false}, query: null, comparison: null, comparisonName: '', fileMode: 'import',
+  segments: new Map(), segmentId: 0, jobs: new Map(), jobToken: 0, worker: null, watchdog: null,
 };
+const HIGHLIGHT_BUDGET = 2000;
 let saved = new Set();
 try {
   state.hideLabels = localStorage.getItem('loupe-hide-labels') === 'true';
@@ -44,7 +46,8 @@ function notify(message, error = false) {
 function setPatterns(query, regex) {
   const parsed = parseQuery(query, {regex});
   state.patterns = termPatterns(parsed);
-  state.scope = {roles: parsed.roles, tools: parsed.tools};
+  state.scope = {roles: parsed.roles, tools: parsed.tools, regex};
+  state.query = {terms: parsed.terms, regex};
 }
 // Does a message fall inside the role:/tool: scope of the current search?
 function inScope(message, toolNames) {
@@ -56,9 +59,9 @@ function inScope(message, toolNames) {
   if (message.role === 'tool' && message.name) names.push(String(message.name).toLowerCase());
   return names.some(name => tools.includes(name));
 }
-function highlight(text, patterns = state.patterns) {
+// Escape text and wrap the given [start, end) ranges in <mark>.
+function highlight(text, ranges) {
   const source = String(text ?? '');
-  const ranges = matchRanges(source, patterns);
   if (!ranges.length) return esc(source);
   let out = '', start = 0;
   for (const [from, to] of ranges) {
@@ -67,25 +70,92 @@ function highlight(text, patterns = state.patterns) {
   }
   return out + esc(source.slice(start));
 }
+// Ranges over the whole text clipped and shifted to a [from, to) slice.
+function sliceRanges(ranges, from, to) {
+  const out = [];
+  for (const [start, end] of ranges) {
+    if (end <= from) continue;
+    if (start >= to) break;
+    out.push([Math.max(start, from) - from, Math.min(end, to) - from]);
+  }
+  return out;
+}
+// Literal terms are marked synchronously: matching is linear. Regular
+// expressions are matched in a worker with a time limit (flushHighlights), so
+// a pattern that is slow on this text cannot freeze the tab. Until the worker
+// answers, the text renders without marks.
+function marked(text, mode, patterns = state.patterns) {
+  const source = String(text ?? '');
+  const render = ranges => mode === 'rich' ? rich(source, ranges) : highlight(source, ranges);
+  if (!patterns.length) return render([]);
+  if (!state.scope.regex) return render(matchRanges(source, patterns));
+  const id = ++state.segmentId;
+  state.segments.set(id, {text: source, mode});
+  return '<span data-hl="' + id + '">' + render([]) + '</span>';
+}
+function flushHighlights() {
+  if (!state.segments.size) return;
+  const token = ++state.jobToken;
+  const segments = [...state.segments].map(([id, segment]) => ({id, text: segment.text}));
+  state.jobs.set(token, state.segments);
+  state.segments = new Map();
+  if (!state.worker) {
+    state.worker = new Worker('/highlight.mjs', {type: 'module'});
+    state.worker.onmessage = onHighlighted;
+  }
+  state.worker.postMessage({token, query: state.query, segments});
+  if (!state.watchdog) state.watchdog = setTimeout(stopHighlighting, HIGHLIGHT_BUDGET);
+  $('match-count').textContent = 'Highlighting…';
+}
+function onHighlighted({data}) {
+  const pending = state.jobs.get(data.token);
+  state.jobs.delete(data.token);
+  clearTimeout(state.watchdog);
+  state.watchdog = state.jobs.size ? setTimeout(stopHighlighting, HIGHLIGHT_BUDGET) : null;
+  if (!pending) return;
+  for (const [id, ranges] of data.results) {
+    const node = document.querySelector('[data-hl="' + id + '"]'), segment = pending.get(id);
+    if (!node || !segment || !ranges.length) continue;
+    node.innerHTML = segment.mode === 'rich' ? rich(segment.text, ranges) : highlight(segment.text, ranges);
+  }
+  collectMarks();
+}
+function stopHighlighting() {
+  state.worker?.terminate();
+  state.worker = null;
+  state.watchdog = null;
+  state.jobs.clear();
+  notify('Highlighting stopped after 2 seconds because this pattern is slow on this text. Search results are unaffected.', true);
+  collectMarks();
+}
+function collectMarks() {
+  state.marks = [...$('conversation').querySelectorAll('mark')];
+  state.match = -1;
+  $('match-controls').classList.toggle('hidden', !state.patterns.length);
+  $('match-count').textContent = state.jobs.size ? 'Highlighting…' : state.marks.length + ' matches';
+  $('prev-match').disabled = $('next-match').disabled = !state.marks.length;
+}
 function inline(line) {
   return line.replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 }
 // Light markdown: fenced code, inline code, headings, and bold. Fences are
 // detected on the raw text so search marks never break the block structure.
-function rich(text) {
-  const out = [];
-  let fence = null;
-  for (const line of String(text ?? '').split('\n')) {
-    if (fence === null && /^\s*```/.test(line)) { fence = []; continue; }
-    if (fence !== null) {
-      if (/^\s*```\s*$/.test(line)) { out.push('<pre class="code">' + highlight(fence.join('\n')) + '</pre>'); fence = null; }
-      else fence.push(line);
-      continue;
+function rich(text, ranges) {
+  const source = String(text ?? ''), out = [];
+  let fence = null, offset = 0;
+  const part = (from, to) => highlight(source.slice(from, to), sliceRanges(ranges, from, to));
+  const closeFence = end => { out.push('<pre class="code">' + part(fence, end) + '</pre>'); fence = null; };
+  for (const line of source.split('\n')) {
+    const end = offset + line.length;
+    if (fence === null && /^\s*```/.test(line)) fence = end + 1;
+    else if (fence !== null) { if (/^\s*```\s*$/.test(line)) closeFence(Math.max(fence, offset - 1)); }
+    else {
+      const heading = line.match(/^(#{1,4}\s+)(.*)$/);
+      out.push(heading ? '<h4>' + inline(part(offset + heading[1].length, end)) + '</h4>' : inline(part(offset, end)));
     }
-    const heading = line.match(/^#{1,4}\s+(.*)$/);
-    out.push(heading ? '<h4>' + inline(highlight(heading[1])) + '</h4>' : inline(highlight(line)));
+    offset = end + 1;
   }
-  if (fence !== null) out.push('<pre class="code">' + highlight(fence.join('\n')) + '</pre>');
+  if (fence !== null) closeFence(Math.max(fence, source.length));
   return out.join('\n');
 }
 function stringContent(value) {
@@ -198,7 +268,7 @@ function renderList() {
     button.innerHTML = '<div class="row-meta">' + badge(record.label) + '<span>' + esc(record.split) + '</span>' +
       '<span style="margin-left:auto">' + (saved.has(record.id) ? '★' : '') + (!state.hideLabels && record.example_note ? ' ◇' : '') + '</span></div>' +
       '<div class="record-title">' + esc(record.title) + '</div>' +
-      (record.snippet && state.patterns.length ? '<div class="snippet">' + highlight(record.snippet) + '</div>' : '') +
+      (record.snippet && state.patterns.length ? '<div class="snippet">' + marked(record.snippet, 'plain') + '</div>' : '') +
       '<div class="row-meta">' + record.message_count + ' messages <span>·</span> ' + record.tool_call_count + ' calls</div>' +
       (review ? '<div class="review-chip">Your review: ' + judgment(review.verdict) + (review.notes.trim() ? ' · notes' : '') +
         (review.evidence?.length ? ' · ' + review.evidence.length + ' evidence' : '') +
@@ -208,6 +278,7 @@ function renderList() {
     list.append(button);
   }
   if (!state.records.length) list.innerHTML = '<div class="empty">No conversations match.</div>';
+  flushHighlights();
   $('page-count').textContent = (state.page + 1) + ' / ' + pages;
   $('prev-page').disabled = state.page === 0;
   $('next-page').disabled = state.page >= pages - 1;
@@ -285,7 +356,7 @@ function renderConversation() {
   if (state.raw) {
     const pre = document.createElement('pre');
     pre.className = 'raw';
-    pre.innerHTML = highlight(JSON.stringify(state.record.trajectory, null, 2));
+    pre.innerHTML = marked(JSON.stringify(state.record.trajectory, null, 2), 'plain');
     inner.append(pre);
   } else {
     const messages = state.record.trajectory.messages;
@@ -309,7 +380,8 @@ function renderConversation() {
       node.id = 'message-' + index;
       node.tabIndex = -1;
       const name = role === 'tool' ? (tools.get(message.tool_call_id) || message.name || 'Tool output') : role === 'user' ? 'User request' : role;
-      node.innerHTML = '<div class="message-head"><span class="role">' + esc(name) + '</span><span class="message-head-right">' +
+      // Tool names are searchable text, so a tool heading can carry a match.
+      node.innerHTML = '<div class="message-head"><span class="role">' + (role === 'tool' ? marked(name, 'plain') : esc(name)) + '</span><span class="message-head-right">' +
         '<button class="evidence-toggle" aria-pressed="' + evidence.has(index) + '" title="Mark this message as evidence for your review">' + (evidence.has(index) ? '⚑ Evidence' : '⚐ Evidence') + '</button>' +
         '<span class="message-number">' + String(index + 1).padStart(2, '0') + ' / ' + messages.length + '</span></span></div>';
       node.querySelector('.evidence-toggle').onclick = () => toggleEvidence(index);
@@ -327,13 +399,13 @@ function renderConversation() {
         summary.textContent = text.replace(/\s+/g, ' ').slice(0, 145) || 'Empty output';
         const content = document.createElement('div');
         content.className = 'content';
-        content.innerHTML = highlight(text);
+        content.innerHTML = marked(text, 'plain');
         details.append(summary, content);
         node.append(details);
       } else if (text) {
         const content = document.createElement('div');
         content.className = 'content';
-        content.innerHTML = rich(text);
+        content.innerHTML = marked(text, 'rich');
         node.append(content);
       }
       if (message.tool_calls?.length) {
@@ -344,9 +416,9 @@ function renderConversation() {
           details.className = 'call';
           details.open = state.expanded;
           const summary = document.createElement('summary');
-          summary.innerHTML = '↳ ' + highlight(call.name || call.function?.name || 'Tool call');
+          summary.innerHTML = '↳ ' + marked(call.name || call.function?.name || 'Tool call', 'plain');
           const pre = document.createElement('pre');
-          pre.innerHTML = highlight(stringContent(call.args ?? call.function?.arguments ?? {}));
+          pre.innerHTML = marked(stringContent(call.args ?? call.function?.arguments ?? {}), 'plain');
           details.append(summary, pre);
           calls.append(details);
         }
@@ -360,11 +432,8 @@ function renderConversation() {
     outline.disabled = !count;
     if (!count) inner.innerHTML = '<div class="empty">No messages with this role. Choose another role above.</div>';
   }
-  state.marks = [...inner.querySelectorAll('mark')];
-  state.match = -1;
-  $('match-controls').classList.toggle('hidden', !state.patterns.length);
-  $('match-count').textContent = state.marks.length + ' matches';
-  $('prev-match').disabled = $('next-match').disabled = !state.marks.length;
+  flushHighlights();
+  collectMarks();
   updateNavigation();
 }
 function updateNavigation() {

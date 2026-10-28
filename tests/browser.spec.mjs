@@ -351,3 +351,30 @@ test('bookmarks are scoped to the collection revision and legacy bookmarks migra
   expect(keys).toEqual(['trajectory-bookmarks', 'trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303']);
   expect(await page.evaluate(() => localStorage.getItem('trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303'))).toBe('[]');
 });
+
+test('regex highlighting runs in a worker and a slow pattern is stopped without freezing the page', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await expect(page.locator('.record .snippet mark')).toHaveText('aab');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  const started = Date.now();
+  await expect(page.locator('#app-status')).toContainText('Highlighting stopped after 2 seconds');
+  expect(Date.now() - started).toBeLessThan(4000);
+  await expect(page.locator('#match-count')).toHaveText('0 matches');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('tool-name headings carry marks when the scoped term matched the name', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool read_file');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-3 .role mark')).toHaveText('read_file');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
