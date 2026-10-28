@@ -505,4 +505,11 @@ test('named non-tool messages show and highlight their name', async ({page}) => 
   await expect(page.locator('#message-4 .role mark')).toHaveText('planner');
   await expect(page.locator('#match-count')).toHaveText('1 matches');
   await expect(page.locator('#message-2 .role')).toHaveText('assistant');
+  await expect(page.locator('#message-2 .role mark')).toHaveCount(0);
+  // A name equal to the role is still indexed, so the base itself is marked.
+  await page.locator('#search').fill('role:assistant assistant');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-2 .role mark')).toHaveText('assistant');
+  await expect(page.locator('#message-4 .role mark')).toHaveCount(0);
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
 });

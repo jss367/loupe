@@ -9,7 +9,7 @@ from server import make_handler, make_record
 messages = [
     {"role": "system", "content": "Inspect the evidence."},
     {"role": "user", "content": "Review the plan carefully."},
-    {"role": "assistant", "content": "I will inspect the report.", "tool_calls": [
+    {"role": "assistant", "name": "assistant", "content": "I will inspect the report.", "tool_calls": [
         {"id": "call-1", "function": {"name": "read_file", "arguments": '{"path":"report.txt"}'}}
     ]},
     {"role": "tool", "tool_call_id": "call-1", "name": "alias_tool", "content": "Evidence from the report: café 🐦 <script>alert('unsafe')</script>"},
