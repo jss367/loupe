@@ -1,11 +1,9 @@
-"""Loupe: a local dataset inspection tool. Currently supports Gloom trajectories."""
+"""Loupe: local inspection of Gloom trajectories and survey datasets."""
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
-
-import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA = ROOT / "data"
@@ -28,6 +26,8 @@ def content_text(content):
 
 
 def load_records(directory):
+    import pandas as pd
+
     records = {}
     noted_examples = set()
     for split in ("train", "test"):
@@ -73,7 +73,7 @@ def filter_records(records, query):
             and (not q or q in r["search"] or q in r["summary"]["id"].lower())]
 
 
-def make_handler(records):
+def make_handler(records=None, survey=None):
     class Handler(BaseHTTPRequestHandler):
         def send(self, body, status=200, mime="application/json; charset=utf-8"):
             encoded = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
@@ -88,6 +88,38 @@ def make_handler(records):
 
         def do_GET(self):
             parsed = urlparse(self.path)
+            # Reject cross-origin reads (including browser DNS rebinding).
+            if self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
+                return self.send({"error": "Local same-origin requests only"}, 403)
+            allowed_hosts = {
+                    f"127.0.0.1:{self.server.server_port}",
+                    f"localhost:{self.server.server_port}"}
+            if self.server.server_port == 80:
+                allowed_hosts.update({"127.0.0.1", "localhost"})
+            if self.headers.get("Host") not in allowed_hosts:
+                return self.send({"error": "Invalid local host"}, 403)
+            if survey is not None:
+                if parsed.path in ("/", "/index.html"):
+                    return self.send((ROOT / "survey.html").read_bytes(), mime="text/html; charset=utf-8")
+                if parsed.path == "/api/survey/meta":
+                    return self.send(survey.meta())
+                if parsed.path in ("/api/survey/responses", "/api/survey/validate"):
+                    try:
+                        return self.send(survey.query(parse_qs(parsed.query),
+                                         validate_only=parsed.path == "/api/survey/validate"))
+                    except ValueError as exc:
+                        return self.send({"error": str(exc)}, 400)
+                if parsed.path.startswith("/api/survey/respondents/"):
+                    ident = unquote(parsed.path.removeprefix("/api/survey/respondents/"))
+                    respondent = survey.respondents.get(ident)
+                    if respondent is not None:
+                        from survey import match_spans
+                        query = parse_qs(parsed.query).get("q", [""])[0]
+                        return self.send({**respondent, "matches": {
+                            q: match_spans(text, query) for q, text in respondent["answers"].items()
+                            if survey.questions[q]["kind"] == "text"
+                        }})
+                return self.send({"error": "Not found"}, 404)
             if parsed.path in ("/", "/index.html"):
                 return self.send((ROOT / "index.html").read_bytes(), mime="text/html; charset=utf-8")
             if parsed.path in ("/app.mjs", "/model.mjs"):
@@ -114,10 +146,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    parser.add_argument("--survey", type=Path, help="Open a loupe.survey.v1 JSON export instead of Gloom")
     args = parser.parse_args()
-    records = load_records(args.data_dir)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(records))
-    print(f"Loaded {len(records):,} trajectories. Loupe: http://127.0.0.1:{args.port}", flush=True)
+    if args.survey:
+        from survey import Survey
+        try:
+            survey = Survey.load(args.survey)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"Cannot open survey: {exc}")
+        handler = make_handler(survey=survey)
+        count = len(survey.respondents)
+    else:
+        records = load_records(args.data_dir)
+        handler, count = make_handler(records), len(records)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+    print(f"Loaded {count:,} records. Loupe: http://127.0.0.1:{server.server_port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

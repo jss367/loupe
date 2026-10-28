@@ -62,16 +62,115 @@ The server binds to `127.0.0.1` and exposes read-only data endpoints. The browse
 
 All trajectories are loaded into memory at startup. This initial implementation is intended for this small dataset; it does not yet provide streaming or indexing for large collections.
 
+## Survey exploration
+
+Loupe also supports local survey exports with structured answers and free
+responses. Survey mode needs only Python 3.10+ and its standard library:
+
+```bash
+python3 server.py --survey /absolute/path/to/survey.loupe.json --port 8788
+```
+
+The survey interface provides answer-text search, question and respondent
+views, numeric and categorical conditions, completion and retained-set filters,
+bookmarks, tags, notes, saved subsets, response links, and matching-response
+CSV downloads. Counts separate subset rows, free-response authors, matching
+authors, and matching responses. All structured conditions are combined with
+AND. Numeric conditions use finite original numeric entries without repairing
+them; missing answers do not pass. Dataset descriptions should explain the
+meaning of retained rows and any cleaning or sampling limitations.
+
+Annotations and saved subsets live in browser local storage, scoped to the
+dataset ID and the browser origin (including hostname and port). Back them up
+as JSON and restore the backup to move between browsers. Restoring merges
+entries; backup entries replace existing entries with the same response key
+or subset name. Dataset files are never modified. CSV exports include original
+free responses and review annotations, with an apostrophe prefixed to cells
+that could be interpreted as spreadsheet formulas.
+
+Survey content can contain identifying information. Keep dataset exports,
+downloaded results, browser storage, and annotations private. Serving on
+loopback is intended for a trusted local machine, not shared hosting. No
+external services, model APIs, or telemetry are used. Everything is loaded into
+memory, so this mode targets small survey collections rather than large
+streaming datasets.
+
+### Survey interchange format
+
+Importers belong with the source datasets; Loupe consumes a JSON document:
+
+```json
+{
+  "schema": "loupe.survey.v1",
+  "id": "example-survey-2024",
+  "title": "Example researcher survey",
+  "description": "Original survey entries; retained rows include incomplete sessions.",
+  "source": {"file": "survey.csv", "sha256": "optional-source-digest"},
+  "questions": [
+    {"id": "reason", "variable": "reason", "raw_variable": "reason", "occurrence": 1,
+     "wording": "Why do you expect this outcome?", "kind": "text", "section": "Expectations"},
+    {"id": "probability", "variable": "probability", "raw_variable": "probability", "occurrence": 1,
+     "wording": "What probability do you assign?", "kind": "number", "section": "Expectations"}
+  ],
+  "respondents": [
+    {"id": "stable-pseudonymous-key", "source_row": 4, "retained": true, "finished": true,
+     "answers": {"reason": "A synthetic explanation.", "probability": "10"}}
+  ]
+}
+```
+
+Question kinds are `text`, `number`, and `category`. Category questions should
+include an `options` array of observed answer strings. Optional `context` and
+`context_id` fields preserve a follow-up question's preceding prompt. Question
+IDs must be unique, including repeated source columns; respondent IDs should
+stay stable across re-exports. Answers reference question IDs and preserve
+nonempty original strings. Omit missing and redacted entries. Do not include
+direct identifiers in the interchange file.
+
+### Tests
+
+Backend and HTTP tests use synthetic data and have no third-party dependencies:
+
+```bash
+python3 -m unittest -v test_survey
+```
+
+Interface workflow tests use Node.js 18+ and jsdom. Node is for tests only;
+the application has no JavaScript build step:
+
+```bash
+npm ci
+npm test
+```
+
+These tests cover search, highlights, respondent views, filtering, empty states,
+bookmarks, tags, notes, saved subsets, and CSV/JSON exports using a temporary
+local server. They exercise DOM behavior; browser rendering needs a separate
+visual check.
+
 ## Project structure and scope
 
 - `server.py` loads Gloom records and serves the interface and JSON API.
 - `index.html` contains the conversation interface and styling.
-- `app.mjs` handles browser interactions and local storage.
+- `app.mjs` handles conversation browser interactions and local storage.
 - `model.mjs` contains review validation, merging, filtering, and sorting rules.
+- `survey.py` validates and filters the survey interchange format.
+- `survey.html` contains the survey reader and browser-local annotation tools.
 - `download_example.py` downloads the pinned example dataset.
 - `requirements.txt` lists the Python dependencies.
 
-Loupe is intended to grow into a reusable viewer for conversation and trajectory datasets. Today its loader, labels, source information, and audit examples are specific to Gloom. Other datasets need an importer and corresponding metadata support; passing arbitrary Parquet or JSON files is not supported yet.
+The conversation loader, labels, source information, and audit examples remain
+specific to Gloom. Other surveys can use the interchange format above. Other
+conversation and trajectory datasets still need an importer and corresponding
+metadata support; arbitrary Parquet or JSON files are not accepted.
+
+Survey annotation saves use the browser's Web Locks API to serialize writes
+across tabs, then read the latest browser notebook before applying the
+edited field or subset. Edits to different responses, annotation fields, or
+subset names are preserved across tabs; for the same field or subset name, the
+last successful save wins. Storage failures leave a persistent backup warning
+until a save succeeds. Keep notebook backups for recovery.
+Browsers without Web Locks retain edits in the session and show a backup warning.
 
 ## Development checks
 
@@ -85,3 +184,4 @@ npm run test:browser
 ```
 
 Browser tests expect the Python environment at `.venv/`, as created in the quick start. They start an isolated fixture server on port 8791 and do not download the dataset. They cover review persistence and row identity, import/export conflicts, storage failures, combined filters, message navigation, label visibility, and mobile layout.
+
