@@ -65,7 +65,7 @@ test('message roles, outline, raw JSON, and hidden-output match navigation work 
   await expect(page.locator('.message')).toHaveCount(6);
   await page.locator('#role-filter').selectOption('tool');
   await expect(page.locator('.message')).toHaveCount(1);
-  await expect(page.locator('.message .role')).toHaveText('read_file');
+  await expect(page.locator('.message .role')).toHaveText('read_file · alias_tool');
   await page.locator('#message-outline').selectOption('3');
   await expect(page.locator('.tool-output')).toHaveAttribute('open', '');
   await expect(page.locator('#message-3')).toBeFocused();
@@ -154,4 +154,400 @@ test('mobile layout has no horizontal overflow and controls remain usable', asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('#role-filter').selectOption('assistant');
   await expect(page.locator('.message')).toHaveCount(2);
+});
+
+test('keyboard judgments, evidence marks, and disagreement filters work together', async ({page}) => {
+  await open(page);
+  await page.locator('#conversation').click();
+  await page.keyboard.press('b');
+  await expect(page.locator('#review-verdict')).toHaveValue('benign');
+  await expect(page.locator('#review-summary')).toContainText('disagrees with dataset label');
+  await expect(page.locator('#agreement')).toHaveText('You disagree with the dataset label on 1 of 1 compared judgments.');
+  await page.locator('#message-3 .evidence-toggle').click();
+  await expect(page.locator('#message-3')).toHaveClass(/evidence/);
+  await expect(page.locator('#review-evidence button')).toHaveText('⚑ 4');
+  await page.locator('#message-0').focus();
+  await page.keyboard.press('e');
+  await expect(page.locator('#review-evidence button')).toHaveCount(2);
+  await expect(page.locator('#message-outline option').nth(1)).toHaveText(/⚑ system/);
+  await page.locator('#review-evidence button').first().click();
+  await expect(page.locator('#message-0')).toBeFocused();
+  await page.reload();
+  await expect(page.locator('#message-3')).toHaveClass(/evidence/);
+  await expect(page.locator('#review-summary')).toContainText('2 evidence');
+  await page.locator('#advanced-filters summary').click();
+  await page.locator('#review-filter').selectOption('disagree');
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await page.locator('#conversation').click();
+  await page.keyboard.press('s');
+  await expect(page.locator('#review-status')).toContainText('No trajectories remain');
+  await page.keyboard.press('n');
+  await expect(page.locator('#review-notes')).toBeFocused();
+  await page.locator('#hide-labels').check();
+  await expect(page.locator('#review-filter')).toHaveValue('');
+  await expect(page.locator('#agreement')).toBeHidden();
+  await expect(page.locator('#review-filter option[value=disagree]')).toBeHidden();
+});
+
+test('comparing a notebook reports agreement and lists disagreements without merging', async ({page}) => {
+  await open(page);
+  await review(page, 'scheming', 'Mine');
+  await page.locator('#next').click();
+  await page.locator('#review-verdict').selectOption('benign');
+  await page.locator('#review-notes').fill('Mine too');
+  const notebook = {
+    format: 'loupe-reviews', version: 1, source: 'https://huggingface.co/datasets/Syghmon/gloom_data',
+    revision: '0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303', reviews: [
+      {id: firstId, verdict: 'benign', notes: 'Their reasoning', evidence: [1], updated_at: '2026-01-01T00:00:00Z'},
+      {id: secondId, verdict: 'benign', notes: '', updated_at: '2026-01-01T00:00:00Z'},
+    ],
+  };
+  const chooser = page.waitForEvent('filechooser');
+  await page.locator('#compare-reviews').click();
+  await (await chooser).setFiles({name: 'theirs.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(notebook))});
+  await expect(page.locator('#compare-text')).toHaveText('theirs.json: 1 / 2 shared judgments agree · κ 0.00 · 1 disagree');
+  await expect(page.locator('#review-filter')).toHaveValue('compare-disagree');
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await expect(page.locator('#review-notes')).toHaveValue('Mine');
+  await expect(page.locator('#other-verdict')).toHaveText('Benign · evidence 2');
+  await expect(page.locator('#other-notes')).toHaveText('Their reasoning');
+  await page.locator('#clear-comparison').click();
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+  await expect(page.locator('#other-review')).toBeHidden();
+});
+
+test('CSV export joins reviews with labels and evidence', async ({page}) => {
+  await open(page);
+  await review(page, 'benign', 'Note, "quoted"');
+  await page.locator('#message-1 .evidence-toggle').click();
+  const pendingDownload = page.waitForEvent('download');
+  await page.locator('#export-csv').click();
+  const download = await pendingDownload;
+  const chunks = [];
+  for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+  const lines = Buffer.concat(chunks).toString().trim().split('\r\n');
+  expect(download.suggestedFilename()).toMatch(/^loupe-reviews-\d{4}-\d{2}-\d{2}\.csv$/);
+  expect(lines[0]).toBe('"id","source_id","split","row_index","title","dataset_label","verdict","agrees_with_label","evidence_messages","notes","updated_at"');
+  expect(lines[1]).toContain(`"${firstId}","egregious-scheming_shared","train","0","Zulu resource planning","scheming","benign","false","2","Note, ""quoted"""`);
+  expect(lines).toHaveLength(2);
+});
+
+test('filters live in the URL and restore after reload', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('plan');
+  await page.locator('#advanced-filters summary').click();
+  await page.locator('#sort').selectOption('title');
+  await page.locator('#min-messages').fill('3');
+  await page.locator('#min-messages').press('Tab');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('.record-title').first()).toHaveText('Beta investigation');
+  await expect(page).toHaveURL(/\?q=plan&minm=3&sort=title#train-0000-egregious-scheming_shared$/);
+  await page.reload();
+  await expect(page.locator('#search')).toHaveValue('plan');
+  await expect(page.locator('#sort')).toHaveValue('title');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await page.locator('#clear').click();
+  await expect(page).toHaveURL(/\/#train-0000-egregious-scheming_shared$/);
+  await page.goto('/?review=compare-disagree');
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+});
+
+test('search snippets, scopes, phrases, and regex mode highlight consistently', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('"supports the plan"');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('.record .snippet mark').first()).toHaveText('supports the plan');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#search').fill('role:tool report');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await page.locator('#search').fill('role:tool plan');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#search').fill('role:tool report');
+  await expect(page.locator('.record .snippet').first()).toContainText('Evidence from the report');
+  await page.locator('#search').fill('tool:read_file');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#match-controls')).toBeHidden();
+  await page.locator('#search').fill('rep.rt');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#regex').check();
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('.message mark').first()).toHaveText('report');
+  await page.locator('#search').fill('(');
+  await expect(page.locator('#result-count')).toContainText('Invalid regular expression');
+  await page.locator('#clear').click();
+  await expect(page.locator('#regex')).not.toBeChecked();
+});
+
+test('fenced and inline code render as code elements', async ({page}) => {
+  await open(page);
+  await expect(page.locator('#message-4 pre.code')).toHaveText('print("**fenced**")');
+  await expect(page.locator('#message-4 strong')).toHaveCount(0);
+  await expect(page.locator('#message-4 code')).toHaveText('inline');
+  await page.locator('#search').fill('fenced');
+  await expect(page.locator('#message-4 pre.code mark')).toHaveText('fenced');
+});
+
+test('highlights follow the search scope and unsafe patterns never reach the browser', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool report');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('.message.tool mark')).toHaveCount(1);
+  await expect(page.locator('.message.assistant mark')).toHaveCount(0);
+  await page.locator('#search').fill('tool:read_file report');
+  await expect(page.locator('#match-count')).toHaveText('3 matches');
+  await expect(page.locator('#message-2 mark')).toHaveCount(2);
+  await expect(page.locator('#message-4 mark')).toHaveCount(0);
+  await page.locator('#search').fill('role:user train-0001');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a+)+');
+  await expect(page.locator('#result-count')).toContainText('Nested unbounded repetition');
+  await expect(page.locator('#match-controls')).toBeHidden();
+  await expect(page.locator('mark')).toHaveCount(0);
+  await page.locator('#search').fill('x'.repeat(201));
+  await expect(page.locator('#result-count')).toContainText('limited to 200 characters');
+});
+
+test('comparison metrics follow local edits and out-of-range evidence is rejected', async ({page}) => {
+  await open(page);
+  await review(page, 'scheming', 'Mine');
+  const base = {
+    format: 'loupe-reviews', version: 1, source: 'https://huggingface.co/datasets/Syghmon/gloom_data',
+    revision: '0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303',
+  };
+  const upload = async (button, value) => {
+    const chooser = page.waitForEvent('filechooser');
+    await page.locator(button).click();
+    await (await chooser).setFiles({name: 'theirs.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(value))});
+  };
+  await upload('#compare-reviews', {...base, reviews: [{id: firstId, verdict: 'benign', notes: '', updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#compare-text')).toHaveText('theirs.json: 0 / 1 shared judgments agree · κ 0.00 · 1 disagree');
+  await page.locator('#review-verdict').selectOption('benign');
+  await expect(page.locator('#compare-text')).toHaveText('theirs.json: 1 / 1 shared judgments agree · κ 1.00 · 0 disagree');
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  await page.locator('#clear-comparison').click();
+  await upload('#import-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [2], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('does not exist in ' + secondId);
+  await upload('#compare-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [2], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('Comparison failed');
+  await upload('#import-reviews', {...base, reviews: [{id: secondId, verdict: 'benign', notes: '', evidence: [1], updated_at: '2026-01-01T00:00:00Z'}]});
+  await expect(page.locator('#app-status')).toContainText('Imported 1 reviews');
+});
+
+test('bookmarks are scoped to the collection revision and legacy bookmarks migrate', async ({page}) => {
+  await page.goto('/');
+  await page.evaluate(id => localStorage.setItem('trajectory-bookmarks', JSON.stringify([id])), secondId);
+  await page.reload();
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await page.locator('#saved-only').check();
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await expect(page.locator('#title')).toHaveText('Alpha evaluation task');
+  await page.locator('#bookmark').click();
+  await expect(page.locator('#result-count')).toHaveText('0 conversations');
+  const keys = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('trajectory-bookmarks')).sort());
+  expect(keys).toEqual(['trajectory-bookmarks', 'trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303']);
+  expect(await page.evaluate(() => localStorage.getItem('trajectory-bookmarks:0492e3e8845e2cddfbbfa1d3c5ff32f3c3b34303'))).toBe('[]');
+});
+
+test('regex highlighting runs in a worker and a slow pattern is stopped without freezing the page', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#result-count')).toHaveText('1 conversation');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await expect(page.locator('.record .snippet mark')).toHaveText('aab');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  const started = Date.now();
+  await expect(page.locator('#app-status')).toContainText('Highlighting stopped after 2 seconds');
+  expect(Date.now() - started).toBeLessThan(4000);
+  await expect(page.locator('#match-count')).toHaveText('0 matches');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('tool-name headings carry marks when the scoped term matched the name', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool read_file');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-3 .role mark')).toHaveText('read_file');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('a tool message with its own distinct name shows and highlights both names', async ({page}) => {
+  await open(page);
+  await page.locator('#search').fill('role:tool alias_tool');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-3 .role')).toHaveText('read_file · alias_tool');
+  await expect(page.locator('#message-3 .role mark')).toHaveText('alias_tool');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('broad patterns are capped at a fixed number of marks', async ({page}) => {
+  await open(page);
+  await page.locator('#raw-tab').click();
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('.');
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+  await expect(page.locator('#match-count')).toHaveText(/^First \d+ matches shown$/);
+  const marks = await page.locator('#conversation mark').count();
+  expect(marks).toBeGreaterThan(0);
+  expect(marks).toBeLessThanOrEqual(2000);
+  await page.locator('#regex').uncheck();
+  await page.locator('#search').fill('report');
+  await expect(page.locator('#match-count')).toHaveText(/^\d+ matches$/);
+});
+
+test('one multiline range cannot emit marks past the cap in rich text', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('[\\s\\S]+');
+  await expect(page.locator('#result-count')).toHaveText('3 conversations');
+  await expect(page.locator('#match-count')).toHaveText('First 2,000 matches shown');
+  await expect(page.locator('#conversation mark')).toHaveCount(2000);
+  expect(await page.locator('#message-5 mark').count()).toBeGreaterThan(1000);
+});
+
+test('switching views while a slow highlight runs does not cancel the new view', async ({page}) => {
+  await open(page);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-5 mark')).toHaveText('aab');
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#app-status')).toBeHidden();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#search').fill('report');
+  await page.locator('#regex').uncheck();
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#match-count')).toHaveText(/^\d+ matches$/);
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#app-status')).toBeHidden();
+});
+
+test('a stale search response is ignored once the query changes', async ({page}) => {
+  await open(page);
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/records?*', async route => {
+    const query = new URL(route.request().url()).searchParams.get('q');
+    if (query === 'slow') { await held; await route.continue(); }
+    else if (query === 'report') await new Promise(resolve => setTimeout(resolve, 3000)).then(() => route.continue());
+    else await route.continue();
+  });
+  const slowRequest = page.waitForRequest(request => request.url().includes('q=slow'));
+  await page.locator('#search').fill('slow');
+  await slowRequest;
+  // Type the replacement, then let the stale response land inside the debounce window.
+  await page.locator('#search').fill('report');
+  release();
+  await page.waitForTimeout(400);
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await expect(page.locator('#welcome')).toBeHidden();
+  await expect(page.locator('#result-count')).toHaveText('Searching…');
+});
+
+test('every highlight worker is terminated after completion, timeout, or cancellation', async ({page}) => {
+  await page.addInitScript(() => {
+    window.__workers = {created: 0, terminated: 0};
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+      constructor(...args) { super(...args); window.__workers.created++; }
+      terminate() { window.__workers.terminated++; return super.terminate(); }
+    };
+  });
+  await open(page);
+  const counts = () => page.evaluate(() => window.__workers);
+  await page.locator('#regex').check();
+  await page.locator('#search').fill('rep.rt');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#next').click();
+  await expect(page.locator('#title')).toHaveText('Beta investigation');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#previous').click();
+  await expect(page.locator('#title')).toHaveText('Zulu resource planning');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  await page.locator('#role-filter').selectOption('tool');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#role-filter').selectOption('');
+  await expect(page.locator('#match-count')).toHaveText('4 matches');
+  let seen = await counts();
+  expect(seen.created).toBeGreaterThan(4);
+  expect(seen.terminated).toBe(seen.created);
+  await page.locator('#search').fill('(a|aa)+b');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('Highlighting…');
+  await page.locator('#conversation-tab').click();
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await page.locator('#raw-tab').click();
+  await expect(page.locator('#app-status')).toContainText('Highlighting stopped');
+  seen = await counts();
+  expect(seen.terminated).toBe(seen.created);
+});
+
+test('named non-tool messages show and highlight their name', async ({page}) => {
+  await open(page);
+  await expect(page.locator('#message-4 .role')).toHaveText('assistant · planner');
+  await page.locator('#search').fill('role:assistant planner');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-4 .role mark')).toHaveText('planner');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-2 .role')).toHaveText('assistant');
+  await expect(page.locator('#message-2 .role mark')).toHaveCount(0);
+  // A name equal to the role is still indexed, so the base itself is marked.
+  await page.locator('#search').fill('role:assistant assistant');
+  await expect(page.locator('#result-count')).toHaveText('2 conversations');
+  await expect(page.locator('#message-2 .role mark')).toHaveText('assistant');
+  await expect(page.locator('#message-4 .role mark')).toHaveCount(0);
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+});
+
+test('the synthetic Tool output heading is never marked', async ({page}) => {
+  const id = 'train-0000-egregious-scheming_shared';
+  const summary = {id, source_id: 'egregious-scheming_shared', row_index: 0, title: 'Synthetic tool', preview: '', label: 1,
+    split: 'train', message_count: 2, tool_call_count: 0, example_note: null, snippet: 'raw output text'};
+  const trajectory = {messages: [{role: 'user', content: 'Run it.'}, {role: 'tool', content: 'raw output text'}]};
+  await page.route('**/api/records?*', route => route.fulfill({json: {records: [summary], total: 1}}));
+  await page.route('**/api/records/' + id, route => route.fulfill({json: {...summary, trajectory}}));
+  await page.goto('/');
+  await expect(page.locator('#title')).toHaveText('Synthetic tool');
+  await expect(page.locator('#message-1 .role')).toHaveText('Tool output');
+  await page.locator('#search').fill('role:tool output');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-1 .role mark')).toHaveCount(0);
+  await expect(page.locator('#message-1 .content mark')).toHaveText('output');
+});
+
+test('ID-less tool calls and outputs are not linked in the browser', async ({page}) => {
+  const id = 'train-0000-egregious-scheming_shared';
+  const summary = {id, source_id: 'egregious-scheming_shared', row_index: 0, title: 'Unlinked tool', preview: '', label: 1,
+    split: 'train', message_count: 3, tool_call_count: 1, example_note: null, snippet: 'zapper'};
+  const trajectory = {messages: [
+    {role: 'user', content: 'Run it.'},
+    {role: 'assistant', content: 'Calling.', tool_calls: [{function: {name: 'zapper', arguments: '{}'}}]},
+    {role: 'tool', content: 'done'},
+  ]};
+  await page.route('**/api/records?*', route => route.fulfill({json: {records: [summary], total: 1}}));
+  await page.route('**/api/records/' + id, route => route.fulfill({json: {...summary, trajectory}}));
+  await page.goto('/');
+  await expect(page.locator('#title')).toHaveText('Unlinked tool');
+  await expect(page.locator('#message-2 .role')).toHaveText('Tool output');
+  await page.locator('#search').fill('zapper');
+  await expect(page.locator('#match-count')).toHaveText('1 matches');
+  await expect(page.locator('#message-1 .call summary mark')).toHaveText('zapper');
+  await expect(page.locator('#message-2 mark')).toHaveCount(0);
+  await page.locator('#search').fill('tool:zapper done');
+  await expect(page.locator('#message-2 mark')).toHaveCount(0);
 });
