@@ -90,7 +90,7 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(found('"1, 2"'), [])
         self.assertEqual(found('"k": "v"'), ["all-0000-p"])
         self.assertEqual(found('"1,"'), ["all-0000-p"])
-        self.assertEqual(record["all-0000-p"]["messages"][0]["text"], "")
+        self.assertEqual(record["all-0000-p"]["messages"][0]["segments"], [])
 
     def test_numbers_keys_and_escapes_format_like_javascript(self):
         # Expected strings were produced by JSON.stringify in Node.
@@ -113,9 +113,29 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(render_text("[" + "9" * 400 + "]"), "[\n  null\n]")
         self.assertEqual(render_text('{"big": ' + "1" * 400 + '}'), '{\n  "big": null\n}')
         # Only canonical ASCII indices sort first; Unicode digits and out-of-range values keep insertion order.
+        long_key = "1" * 5000
+        self.assertEqual(js_stringify({long_key: 1, "3": 2}), '{\n  "3": 2,\n  "' + long_key + '": 1\n}')
         self.assertEqual(js_stringify({"²": 1, "٣": 2, "３": 3, "4294967295": 4, "7": 5, "x": 6}),
                          '{\n  "7": 5,\n  "²": 1,\n  "٣": 2,\n  "３": 3,\n  "4294967295": 4,\n  "x": 6\n}')
         self.assertEqual(render_text("[1e-07]"), "[\n  1e-7\n]")
+
+    def test_terms_match_within_one_rendered_segment(self):
+        messages = [{"role": "user", "content": "foo"}, {"role": "user", "content": "bar"},
+                    {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "alpha", "arguments": "beta"}}]},
+                    {"role": "tool", "tool_call_id": "c", "name": "gamma", "content": "delta"}]
+        record = {"all-0000-s": make_record("all-0000-s", "s", 0, "all", {"messages": messages}, None)}
+        found = lambda q, regex=False: [r["id"] for r in filter_records(record, {"q": [q], "regex": ["1" if regex else ""]})]
+        self.assertEqual(found("foo bar"), ["all-0000-s"])
+        self.assertEqual(found("role:user foo bar"), ["all-0000-s"])
+        self.assertEqual(found("role:user foo\\s+bar", regex=True), [])
+        self.assertEqual(found("foo\\s+bar", regex=True), [])
+        self.assertEqual(found("alpha\\s+beta", regex=True), [])
+        self.assertEqual(found("alpha\\s*", regex=True), ["all-0000-s"])
+        self.assertEqual(found("gamma\\sdelta", regex=True), [])
+        self.assertEqual(found("alpha", regex=True), ["all-0000-s"])
+        self.assertEqual(found('"foo\nbar"'), [])
+        self.assertEqual(record["all-0000-s"]["messages"][2]["segments"], ["alpha", "beta"])
+        self.assertEqual(record["all-0000-s"]["messages"][3]["segments"], ["delta", "gamma", "alpha"])
 
     def test_scoped_terms_ignore_trajectory_ids(self):
         self.assertEqual(search(q="train-0001"), ["train-0001-b"])
@@ -161,10 +181,7 @@ class QueryTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in results], ["train-0001-b"])
         self.assertIsNone(results[0]["snippet"])
         results = filter_records(records(), parse_qs("q=carefully"))
-        snippet = results[0]["snippet"]
-        self.assertTrue(snippet.startswith("Inspect the evidence. Review the Plan carefully."))
-        self.assertNotIn("\n", snippet)
-        self.assertNotIn("tool_call_id", snippet)
+        self.assertEqual(results[0]["snippet"], "Review the Plan carefully.")
         long_text = {"messages": [{"role": "user", "content": "x" * 500 + " needle " + "y" * 500}]}
         long_records = {"t": make_record("t", "t", 0, "train", long_text, 0)}
         snippet = filter_records(long_records, parse_qs("q=NEEDLE"))[0]["snippet"]

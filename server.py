@@ -72,8 +72,9 @@ ARRAY_INDEX = re.compile(r"(0|[1-9][0-9]*)\Z")
 def _js_key_order(keys):
     """JavaScript lists canonical array-index keys first, ascending, then the rest in insertion order."""
     def index_key(key):
-        # Canonical ASCII decimal only; Unicode digits such as "²" or "٣" are ordinary keys.
-        return ARRAY_INDEX.fullmatch(key) is not None and int(key) < 2 ** 32 - 1
+        # Canonical ASCII decimal only, at most ten digits (the largest index is
+        # 4294967294), so Unicode digits and very long digit strings never reach int().
+        return len(key) <= 10 and ARRAY_INDEX.fullmatch(key) is not None and int(key) < 2 ** 32 - 1
     indexed = sorted((key for key in keys if index_key(key)), key=int)
     return indexed + [key for key in keys if not index_key(key)]
 
@@ -146,10 +147,11 @@ def call_arguments(call):
     return {} if args is None else args
 
 
-def message_text(message, tool_names):
-    """Searchable text for one message: content, each tool call's name and
-    arguments, and the message's own and linked tool names. Only fields the
-    interface renders are indexed, so every match is visible in the view."""
+def message_segments(message, tool_names):
+    """Searchable segments for one message: content, each tool call's name and
+    arguments, and the message's own and linked tool names. Each segment is a
+    unit the interface highlights independently, so a term must match inside
+    one segment and every match is visible in the view."""
     pieces = [render_text(message.get("content"))]
     for call in message.get("tool_calls") or []:
         pieces.append(str(call_name(call) or "Tool call"))
@@ -158,7 +160,7 @@ def message_text(message, tool_names):
         pieces.append(str(message["name"]))
     if message.get("tool_call_id") in tool_names:
         pieces.append(tool_names[message["tool_call_id"]])
-    return "\n".join(pieces)
+    return [piece for piece in pieces if piece]
 
 
 def make_record(ident, source_id, row_index, split, trajectory, label, example_note=None, title=None):
@@ -177,15 +179,16 @@ def make_record(ident, source_id, row_index, split, trajectory, label, example_n
                 tool_names[call["id"]] = str(name)
     parts = []
     for message in messages:
-        text = message_text(message, tool_names)
+        segments = message_segments(message, tool_names)
         tools = {str(call_name(call) or "").lower() for call in message.get("tool_calls") or []}
         if message.get("tool_call_id") in tool_names:
             tools.add(tool_names[message["tool_call_id"]].lower())
         if message.get("role") == "tool" and message.get("name"):
             tools.add(str(message["name"]).lower())
         tools.discard("")
-        parts.append({"role": str(message.get("role", "")).lower(), "tools": tools, "text": text, "lower": text.lower()})
-    text = "\n".join(part["text"] for part in parts)
+        parts.append({"role": str(message.get("role", "")).lower(), "tools": tools,
+                      "segments": segments, "lower": [segment.lower() for segment in segments]})
+    segments = [segment for part in parts for segment in part["segments"]]
     summary = {
         "id": ident, "source_id": source_id, "row_index": row_index,
         "title": str(title)[:130], "preview": first_user[:300],
@@ -194,7 +197,8 @@ def make_record(ident, source_id, row_index, split, trajectory, label, example_n
         "tool_call_count": sum(len(m.get("tool_calls") or []) for m in messages),
         "example_note": example_note,
     }
-    return {"summary": summary, "messages": parts, "text": text, "lower": text.lower(), "trajectory": trajectory}
+    return {"summary": summary, "messages": parts, "segments": segments,
+            "lower": [segment.lower() for segment in segments], "trajectory": trajectory}
 
 
 def load_records(directory):
@@ -213,7 +217,8 @@ def load_records(directory):
             source_id = row["id"]
             ident = f"{split}-{row_index:04d}-{source_id}"
             record = make_record(ident, source_id, row_index, split, trajectory, int(row["ground_truth"]))
-            is_example = source_id not in noted_examples and EXAMPLE_NEEDLES.get(source_id, "") in record["lower"]
+            needle = EXAMPLE_NEEDLES.get(source_id, "")
+            is_example = source_id not in noted_examples and any(needle in segment for segment in record["lower"])
             note = EXAMPLES.get(source_id) if is_example else None
             if note:
                 noted_examples.add(source_id)
@@ -386,22 +391,35 @@ def filter_records(records, query):
             if not terms:
                 results.append(summary)
                 continue
-            text, lower = "\n".join(m["text"] for m in parts), "\n".join(m["lower"] for m in parts)
+            segments = [segment for m in parts for segment in m["segments"]]
+            lower = [segment for m in parts for segment in m["lower"]]
         else:
-            text, lower = record["text"], record["lower"]
+            segments, lower = record["segments"], record["lower"]
         # Trajectory IDs only count toward unscoped searches; scoped terms must
-        # match inside the selected messages.
+        # match inside the selected messages. Every term must match within a
+        # single segment, the unit the interface highlights.
         ident = "" if scoped else summary["id"].lower()
         if use_regex:
-            if not all(timed_search(p, text, deadline) or (ident and timed_search(p, ident, deadline)) for p in patterns):
+            hits = [segment_search(p, segments, deadline) for p in patterns]
+            if not all(hit or (ident and timed_search(p, ident, deadline)) for hit, p in zip(hits, patterns)):
                 continue
-            first = timed_search(patterns[0], text, deadline)
+            first = hits[0]
         else:
-            if not all(t in lower or (ident and t in ident) for t in lowered):
+            if not all(any(t in segment for segment in lower) or (ident and t in ident) for t in lowered):
                 continue
-            first = re.search(re.escape(terms[0]), text, re.IGNORECASE)
-        results.append({**summary, "snippet": snippet(text, first)})
+            index = next((i for i, segment in enumerate(lower) if lowered[0] in segment), None)
+            first = None if index is None else (segments[index], re.search(re.escape(terms[0]), segments[index], re.IGNORECASE))
+        results.append({**summary, "snippet": snippet(*first) if first else None})
     return results
+
+
+def segment_search(pattern, segments, deadline):
+    """First (segment, match) for a pattern, or None; each segment is searched on its own."""
+    for segment in segments:
+        match = timed_search(pattern, segment, deadline)
+        if match:
+            return segment, match
+    return None
 
 
 def make_handler(records=None, survey=None, meta=None):
